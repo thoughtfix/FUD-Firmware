@@ -1,0 +1,164 @@
+LOCKET FIRMWARE - ACTION PLAN
+
+Target hardware (fixed, single combo): M5Stack StickS3 (ESP32-S3-PICO,
+8MB flash, 8MB PSRAM) + Pingequa RF Pack S3 (CC1101 433, nRF24L01+).
+See development-log.txt for the confirmed pin map and audit.
+
+OWNERSHIP TAGS
+  Assigned: code      implementation work (firmware)
+  Assigned: creative  human-only art and visual design
+  Assigned: human     human decisions, on-hardware testing, licensing
+  Assigned: verify    needs a probe/measurement on the real device (POST-2)
+
+OPERATING PROCEDURE (core design principle, do not undo)
+  Radios are TIME-SLICED. Each mode (BLE, WiFi scan, WiFi deauth monitor,
+  later CC1101 sub-GHz and nRF24) owns the antenna for a 5-10 s window, in
+  sequence, on the core-0 scan task. The UI runs on core 1. Locket is NOT a
+  just-in-time alerter: a signal may slip past for a cycle before it lands in
+  a listening window, and that is acceptable. Chosen for simplicity and
+  battery life over instantaneous detection. Add new detectors as more
+  sequential phases, never as concurrent radios. (Also in README.md and
+  project memory.)
+
+WORKING RULES (from claude-rules.txt)
+  - Always keep a known-good rollback point before large changes.
+  - No SD/storage features. No social features. No attack/TX features
+    except TV-B-Gone. Passive by default.
+  - Reuse IDEAS from other projects with credit. Reuse CODE only if the
+    license permits; if any line is copied, comment it with attribution.
+  - No emdashes, no non-keyboard glyphs, no AI/human-collab disclosure in
+    tracked files (that lives in the separate boilerplate).
+
+=====================================================================
+PHASE 0 - FOUNDATION
+=====================================================================
+[done]   Hardware capability audit + POST probe (artifacts/post-test).
+[done]   Confirm toolchain (PlatformIO 6.2.0, build/flash/serial).
+[ ] Assigned: code   Locket PlatformIO project skeleton: single env
+                     (sticks3), M5Unified + display driver, partitions for
+                     8MB, PSRAM enabled. Separate from artifacts/.
+[ ] Assigned: code   Hello-world: boot straight to scan screen with a
+                     placeholder idle face and live counters. Tag this as
+                     the first rollback checkpoint.
+[ ] Assigned: verify POST-2 items before features depend on them:
+                     - CC1101 RSSI at 915 (LoRa-band best-effort reality).
+                     - nRF24 promiscuous/packet-capture polling (no IRQ).
+                     - nRF24 Nordic-vs-clone fingerprint.
+                     - RGB/status LED present? (affects alert design)
+
+=====================================================================
+PHASE 1 - SCAN ENGINE + DETECTORS  (the core mission)
+=====================================================================
+[ ] Assigned: code   Scan scheduler: round-robin duty cycle across WiFi,
+                     BLE, sub-GHz, 2.4 raw. PSRAM-backed rolling detection
+                     log (per-device dedupe + hit counter). Default: scan
+                     always, regardless of motion.
+  Detectors (each an on/off toggle, each logs; alert tier per detector):
+    WiFi/2.4:
+      [ ] Flock ALPR   [ ] Axon   [ ] Ring   [ ] generic IP cameras
+      [ ] Motorola/Genetec ALPR
+      [ ] Deauth flood (behavioral)   [ ] Evil twin (behavioral)
+      [ ] PineAP / Pineapple
+    BLE:
+      [ ] Meta/Snap glasses   [ ] BT skimmers   [ ] Raven
+      [ ] Trackers (AirTag / SmartTag / Google FMD / Tile)
+      [ ] Remote ID drones (decode)
+      [ ] Hacker tools (Flipper / Pwnagotchi / ESP deauthers)
+      [ ] iBeacon (default OFF, high volume)
+    Sub-GHz (CC1101):
+      [ ] Sub-GHz activity/proximity (433 solid)
+      [ ] LoRa-band activity, region presets, US 915 default
+          (best-effort off-433, activity only, never decoded LoRa)
+    2.4 raw (nRF24, repurposed, NOT mousejack):
+      [ ] Non-WiFi 2.4 emitter detection (analog spy cams, drone links,
+          wireless mics) - on-mission, WiFi scan cannot see these
+      [ ] 2.4 GHz jammer detection (broadband energy)
+    IR (onboard):
+      [ ] IR presence (RX)
+  [ ] Assigned: human  OUI/signature tables: sanity-check and grade
+                       confidence (do not inherit others' unverified rows).
+
+=====================================================================
+PHASE 2 - UI / UX  (friendly, tiny-screen, glanceable)
+=====================================================================
+[ ] Assigned: code   Shake-for-help: a sustained shake on ANY screen shows a
+                     context help screen (controls + power features like
+                     Baseline) until shaken again to dismiss. Keeps rare
+                     commands off the main UI. (distinct from the double-tap
+                     ack gesture) TODO later.
+[ ] Assigned: code   Menu system for 2 buttons + gestures. SEL=11, side=12,
+                     active LOW. Context-sensitive gestures (test-first):
+                     idle/alert: shake or tap to mute; menu: tap=select,
+                     double-tap=back. State machine must make the active
+                     mode explicit so tap meanings never collide.
+[ ] Assigned: code   Scanner on/off menu + global presets (quiet / paranoid).
+                     Persist settings in NVS (not SD).
+[ ] Assigned: code   Alert system, 3 tiers: LOUD (active attacks), MEDIUM
+                     (surveillance hw), QUIET LOG (common trackers). Output:
+                     full-screen card + speaker ping (tier-specific) +
+                     status LED if present. Auto-dismiss + gesture dismiss.
+[ ] Assigned: code   Idle mascot render + mood engine (color, happy/sad,
+                     reacts to detections and 2.4 crowd level). Procedural
+                     draw + procedural spin animation (coin squash / wheel
+                     rotate) so no frame assets and any color are possible.
+[ ] Assigned: creative  Mascot art. Hackers-movie smiley with eyepatch.
+                     Deliver expressions: neutral/happy/sad/alert/(spin key
+                     pose). ONLY a human can create these.
+                     Spec: round, 1:1 aspect. Screen is 240x135 landscape,
+                     so face fits the 135 height. Target ~120-128 px diameter
+                     to leave margin for counters/status. Deliver as
+                     transparent PNG. PREFERRED: a grayscale+alpha tintable
+                     mask per expression so code recolors it at runtime (one
+                     asset, any mood color) instead of many colored copies.
+                     If full-color variants are wanted instead, provide the
+                     mood set explicitly.
+[ ] Assigned: creative  Color palette / theme choices (idle, per threat
+                     tier, mascot moods). Human aesthetic decision.
+[ ] Assigned: creative  (stretch) Hackers character faces (Acid Burn, Lord
+                     Nikon, Zero Cool) redrawn/edited to fit the round 1:1
+                     face slot for the hacker-detection easter egg. Heavy
+                     manual art edit of the downloaded source images.
+
+=====================================================================
+PHASE 3 - TOYS / INSTANT GRATIFICATION
+=====================================================================
+[ ] Assigned: code   Spectrum waterfall, wide landscape, color-coded.
+                     Tilt-to-tune: tip one way = higher freq, other = lower
+                     (idea credited to M5PORKCHOP dial mode; our code clean-
+                     room, color + more span). Sources: CC1101 sub-GHz and
+                     nRF24 2.4 GHz.
+[ ] Assigned: code   TV-B-Gone (IR TX 46). Idea/codes lineage: NEMO/HAKRWATCH
+                     (verify code license before lifting; else clean-room
+                     from public IR code tables with attribution).
+[ ] Assigned: code   Hot/cold direction finder for a selected detection.
+                     RSSI trend = warmer/colder; RSSI peak while rotating
+                     (BMI270 gyro heading) = general CONE direction. Coarse
+                     by design, no precise arrow.
+[ ] Assigned: code   2.4 GHz crowd/interference meter (nRF24) as a live
+                     ambient visual feeding the mascot mood.
+
+=====================================================================
+PHASE 4 - POLISH / POWER / SETTINGS
+=====================================================================
+[ ] Assigned: code   Audio: procedural beeps/pings only, low volume, tiered
+                     by threat. No voice/music.
+[ ] Assigned: code   Power options: default full scan. OPT-IN motion-based
+                     throttle (BMI270 no-motion) and screen dim-when-still.
+                     Battery status from PMIC (charge state GPIO 13).
+[ ] Assigned: code   Settings persistence (NVS): toggles, alert tiers,
+                     region (sub-GHz band), theme, gesture prefs.
+[ ] Assigned: human  On-hardware user testing: gesture thresholds, mute
+                     vs select tap feel, DF usability in a real field, alert
+                     legibility, battery life under real duty cycle.
+
+=====================================================================
+CROSS-CUTTING / DECISIONS  (human)
+=====================================================================
+[ ] Assigned: human  License choice (noncommercial leaning, undecided) and
+                     whether/when to distribute publicly. Gate any code
+                     reuse on this.
+[ ] Assigned: human  First-commit plan: squash to a clean initial commit
+                     when ready (per rules, no big pile of WIP commits).
+[ ] Assigned: creative  Boot splash / wordmark for Locket (optional).
+
+(The "what Claude cannot do" list lives in claude-rules.txt.)
