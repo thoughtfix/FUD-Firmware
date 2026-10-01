@@ -292,7 +292,7 @@ registries, the
 Remote ID format, and the [FCC ID database](https://www.fcc.gov/oet/ea/fccid) for
 working out what a given radio actually is.
 
-I encourage anyone to send stars to the projects and tools linked above:
+I encourage anyone to send stars to the projects and tools linked above. You can find them here:
 
 - https://github.com/skizzophrenic/SquachWatch-CYD
 - https://github.com/BruceDevices/firmware
