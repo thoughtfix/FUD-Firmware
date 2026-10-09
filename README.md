@@ -19,6 +19,20 @@ The RF Pack is optional. On a bare StickS3 the WiFi and Bluetooth scanners still
 run; Zuse simply switches the sub-GHz and 2.4 GHz scanners off when no pack is
 detected.
 
+## RF Pack additional features
+
+FUD runs on a StickS3 alone, watching WiFi and Bluetooth. Attach the Pingequa
+RF Pack S3 and Zuse picks up two more radios, and the features that ride on
+them:
+
+- **Sub-GHz 433 MHz (CC1101):** nearby key fobs, tire sensors, remotes, and
+  replay attacks, plus a live 433 MHz waterfall.
+- **2.4 GHz sweep (nRF24):** broadband jammer detection, a full 2.4 GHz
+  waterfall, and the traffic graph.
+
+Same binary either way. No pack, these stay off. Pack attached, Zuse turns them
+on automatically.
+
 ## What FUD is (and is not)
 
 FUD is a first line of defense. A canary in the coal mine. When Zuse trips, that
