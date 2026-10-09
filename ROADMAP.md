@@ -21,9 +21,11 @@ TV-B-Gone).
 
 Firmware for a variety of devices, aimed squarely at less-experienced security
 researchers who want to learn and experiment without accidentally breaking laws.
-Too many people finish a build, take it for a walk, and do not realize they are
-now transmitting in ways that are illegal in their area. FUD is deliberately a
-receiver and a canary. The idea generalizes to other hardware over time.
+It is unsettling how many people finish a Pwnagotchi and take it for a walk
+without realizing they are probably breaking three different laws on the way
+(deauthentication, attempted association, interception). FUD is deliberately a
+receiver and a canary, so you can learn the airwaves without transmitting into
+them. The idea generalizes to other hardware over time.
 
 ## Near term (before a wider "stable" push)
 
