@@ -19,6 +19,10 @@ The RF Pack is optional. On a bare StickS3 the WiFi and Bluetooth scanners still
 run; Zuse simply switches the sub-GHz and 2.4 GHz scanners off when no pack is
 detected.
 
+To print a wearable shell for this, I posted a
+[wearable 3D model of the M5Stick S3 with the PINGEQUA backpack](https://www.printables.com/model/1896142-wearable-m5stick-s3-with-pingequa-backpack)
+on Printables.
+
 ## RF Pack additional features
 
 FUD runs on a StickS3 alone, watching WiFi and Bluetooth. Attach the Pingequa
