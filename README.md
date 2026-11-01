@@ -19,9 +19,12 @@ The RF Pack is optional. On a bare StickS3 the WiFi and Bluetooth scanners still
 run; Zuse simply switches the sub-GHz and 2.4 GHz scanners off when no pack is
 detected.
 
-To print a wearable shell for this, I posted a
-[wearable 3D model of the M5Stick S3 with the PINGEQUA backpack](https://www.printables.com/model/1896142-wearable-m5stick-s3-with-pingequa-backpack)
-on Printables.
+The wearable 3D model for this was recently REMOVED from Printables, and is not 
+in this repo. The 
+[original model](https://makerworld.com/en/models/2797823-pingequa-rf-pack-s3-enclosure-for-m5stack-sticks3)
+is licensed with MakerWorld's "Exclusive License" so hosting derivative works 
+anywhere else is a license violation. Please encourage any developer using 
+platform-exclusive licensing to use more open licensing.
 
 ## RF Pack additional features
 
