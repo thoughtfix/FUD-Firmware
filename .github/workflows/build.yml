@@ -33,15 +33,18 @@ jobs:
       - name: Build (env:sticks3)
         run: pio run -e sticks3
 
+      - name: Compute a slash-safe ref name
+        run: echo "SAFE_REF=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_ENV"
+
       - name: Stage artifact
         run: |
           mkdir -p dist
-          cp .pio/build/sticks3/firmware.bin "dist/fud-firmware-sticks3-${GITHUB_REF_NAME}.bin"
+          cp .pio/build/sticks3/firmware.bin "dist/fud-firmware-sticks3-${SAFE_REF}.bin"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fud-firmware-sticks3-${{ github.ref_name }}
+          name: fud-firmware-sticks3-${{ env.SAFE_REF }}
           path: dist/*.bin
 
       - name: Publish release (tags only)
