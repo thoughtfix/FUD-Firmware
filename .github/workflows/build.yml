@@ -1,0 +1,59 @@
+name: build
+
+# Builds the release firmware on every push/PR to main, and on a version tag
+# (v*) also publishes a GitHub release with the binary attached. CI installs a
+# current PlatformIO Core, so the committed espressif32 platform builds without
+# the local isolated-core workaround.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to create releases on tag builds
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade platformio
+
+      - name: Build (env:sticks3)
+        run: pio run -e sticks3
+
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp .pio/build/sticks3/firmware.bin "dist/fud-firmware-sticks3-${GITHUB_REF_NAME}.bin"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fud-firmware-sticks3-${{ github.ref_name }}
+          path: dist/*.bin
+
+      - name: Publish release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: FUD ${{ github.ref_name }}
+          files: dist/*.bin
+          body: |
+            Passive counter-surveillance firmware for the M5Stack StickS3
+            (with optional Pingequa RF Pack S3).
+
+            Flash firmware.bin at offset 0x10000 with esptool, or use
+            pio run -e sticks3 -t upload. Nothing transmits by default.
+            Scans are passive. See the README for full build and flash steps.

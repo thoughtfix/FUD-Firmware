@@ -22,7 +22,7 @@
 #define IR_TX_PIN 46
 IRsend irTx(IR_TX_PIN);
 
-#define FUD_VERSION "v0.40b"
+#define FUD_VERSION "v0.50b"
 #include "facevec.h"   // vector Zuse, backported from FUD-Deck (thoughtfix, GPL-3.0)
 
 static const uint16_t AMBER  = 0xFFE0;
