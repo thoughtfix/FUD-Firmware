@@ -1,0 +1,4 @@
+.pio/
+src/generated/
+work-log.txt
+backports-notes.md
