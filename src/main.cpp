@@ -22,8 +22,8 @@
 #define IR_TX_PIN 46
 IRsend irTx(IR_TX_PIN);
 
-#define FUD_VERSION "v0.40b"
-#include "generated/image_assets.h"
+#define FUD_VERSION "v0.50b"
+#include "facevec.h"   // vector Zuse, backported from FUD-Deck (thoughtfix, GPL-3.0)
 
 static const uint16_t AMBER  = 0xFFE0;
 static const uint16_t LK_RED = 0xF800;
@@ -49,7 +49,7 @@ static const uint32_t MOOD_SHOW     = 2400;
 struct Det {
   bool used=false; uint8_t key[6]={0}; Cat cat=CAT_NONE;
   char label[16]={0}; char name[32]={0};
-  uint32_t firstSeen=0,lastSeen=0; uint16_t hits=0; int8_t rssi=0;
+  uint32_t firstSeen=0,lastSeen=0; uint16_t hits=0; int8_t rssi=0; uint16_t place=0;   // place = Wi-Fi area when first seen (following needs a move)
   char conf='M';   // signature confidence: 'H' high, 'M' medium, 'L' low
   bool acked=false, alarm=false, ignored=false, escalated=false, ssidBased=false, active=false;
 };
@@ -59,6 +59,10 @@ uint32_t cntCam=0,cntHak=0,cntAtk=0,cntTrk=0,cntDrn=0,cntSub=0;
 bool ccPresent=false, nrfPresent=false;   // RF Pack radios detected at boot
 volatile char activeRadio='-';            // B=BLE W=WiFi S=subGHz N=nRF24  (one at a time)
 uint32_t lastDetection=0;
+// Where am I, without GPS: the strongest nearby access points. When most of them change for two
+// Wi-Fi scans running, you have moved and the place number bumps. A tracker only counts as
+// following once it was first seen before a move and is still here after. RAM only, no storage.
+volatile uint16_t placeNow=0; volatile bool placeKnown=false;
 bool muted=false;   // MUTE: ignore everything (silent + calm), keep logging
 
 struct Evt { uint8_t key[6]; Cat cat; char label[16]; char name[32]; int8_t rssi; bool ssid; bool active; char conf; };
@@ -127,8 +131,16 @@ static const int MAXIGNSS=16;
 char ignSSID[MAXIGNSS][33]; int ignSSIDN=0;
 
 // ================= helpers =================
-static const ImageAsset* findImg(const char* n){ for(int i=0;i<IMAGE_COUNT;i++) if(!strcmp(IMAGES[i].name,n)) return &IMAGES[i]; return nullptr; }
-static void drawFaceAt(const char* n,int x,int y){ const ImageAsset* a=findImg(n); if(a) M5.Display.drawPng(a->data,a->len,x,y); }
+// Zuse at (x,y) in a size-square. Vector only: every face in the set is a vector.
+// Works on the panel or a sprite: both satisfy facevec's fillRect/startWrite contract.
+// Unknown names draw defaultsmile (facevec::draw handles that). angle turns the features
+// (wheel spin); sweep lays a radar beam (degrees, < 0 = none). Both default to off.
+template<class G> static void drawZuse(G& g,const char* n,int x,int y,int size,uint16_t bg,float angle=0,float sweep=-1){
+  facevec::draw(g,n,x,y,size,(int32_t)bg,angle,sweep);
+}
+// Home idle wheel/radar state: features turned (angle) or a radar beam (sweep) over the face.
+// 0 angle and -1 sweep = none. Driven by the wheel scheduler, read by drawIdle's face draw.
+static float g_faceAngle=0, g_faceSweep=-1;
 // Serious (active) threats keep their persistent alert even when MUTED, so a
 // hacker device or a live deauth is still on screen when you pick the pendant
 // up. Mute only silences the sound; passive stuff (evil twin, cameras) just
@@ -136,7 +148,7 @@ static void drawFaceAt(const char* n,int x,int y){ const ImageAsset* a=findImg(n
 static bool alarmActive(){ for(auto&d:dets) if(d.used&&d.alarm&&!d.acked) return true; return false; }
 static int  usedCount(){ int c=0; for(auto&d:dets) if(d.used) c++; return c; }
 static int  activeAttackIdx(){ int b=-1; uint32_t t=0; for(int i=0;i<MAXDET;i++){ Det&d=dets[i]; if(d.used&&d.alarm&&!d.acked&&d.lastSeen>=t){t=d.lastSeen;b=i;} } return b; }
-static const char* alarmFace(){ int i=activeAttackIdx(); return (i>=0 && dets[i].cat==CAT_HACKDEV) ? "acidburn" : "zerocool"; }
+static const char* alarmFace(){ return "redface"; }  // serious threat face (vector). Hacker device vs other attack share it now that the PNG trio is gone.
 // visible log = active threats (non-tracker, not acked, not ignored)
 // The log. logFilter<0 = all active threats (acked hidden); logFilter==a Cat =
 // every entry of that category (for the ZOOM drill-down, incl trackers).
@@ -148,9 +160,9 @@ static void logIdxs(int& n,int idxs[]){ n=0; for(int i=0;i<MAXDET;i++){ Det&d=de
     while(b>=0 && ( (dets[idxs[b]].active<dets[v].active) ||
         (dets[idxs[b]].active==dets[v].active && dets[idxs[b]].firstSeen<dets[v].firstSeen) )){ idxs[b+1]=idxs[b]; b--; }
     idxs[b+1]=v; } }
-static void trkIdxs(int& n,int idxs[]){ n=0; for(int i=0;i<MAXDET;i++){ Det&d=dets[i]; if(d.used&&d.cat==CAT_TRACKER&&!d.ignored) idxs[n++]=i; }
-  for(int a=1;a<n;a++){ int v=idxs[a]; uint32_t k=dets[v].firstSeen; int b=a-1; while(b>=0&&dets[idxs[b]].firstSeen>k){idxs[b+1]=idxs[b];b--;} idxs[b+1]=v; } } // longest dwell first
-static int  trkCount(){ int idx[MAXDET],n; trkIdxs(n,idx); return n; }
+// Live count of a category: exactly what that category's list shows (used, not ignored), so a
+// tile or count can never point at something you cannot open. cnt* stay as the since-boot tally.
+static int  liveCount(Cat c){ int n=0; for(auto&d:dets) if(d.used&&!d.ignored&&d.cat==c) n++; return n; }
 static bool ackedAttackPresent(){ uint32_t now=millis(); for(auto&d:dets) if(d.used&&d.active&&d.acked&&(now-d.lastSeen)<ALARM_STANDDOWN_MS) return true; return false; }
 
 static Det* slotFor(const uint8_t key[6]){
@@ -234,7 +246,7 @@ static void ingest(const Evt& e){
   Det* d=slotFor(e.key); uint32_t now=millis(); bool fresh=!d->used;
   if(fresh){ d->used=true; memcpy(d->key,e.key,6); d->cat=e.cat; d->ssidBased=e.ssid; d->active=e.active; d->conf=e.conf;
     strncpy(d->label,e.label,sizeof(d->label)-1); strncpy(d->name,e.name,sizeof(d->name)-1);
-    d->firstSeen=now; d->hits=0;
+    d->firstSeen=now; d->hits=0; d->place=placeNow;
     d->ignored = isIgnored(e.key) || (e.ssid && isIgnoredSSID(e.name)); }  // persistent whitelist
   d->lastSeen=now; d->rssi=e.rssi; d->hits++;
   if(e.name[0]){ d->name[0]=0; strncpy(d->name,e.name,sizeof(d->name)-1); } // keep latest (frame count, src)
@@ -255,13 +267,15 @@ static void ingest(const Evt& e){
       // muted, just log silently.
       if(!muted){
         playRiff(RIFF_DETECT,NELEM(RIFF_DETECT),110);   // Zuse: "Bio-digital jazz" (riff 3)
-        dispFace = (e.cat==CAT_CAMERA)?"lord-nikon":(e.cat==CAT_DRONE)?"shockedface":(e.cat==CAT_SUBGHZ)?"tongueface":"redface";
+        dispFace = (e.cat==CAT_CAMERA)?"swirly-face":(e.cat==CAT_DRONE)?"shockedface":(e.cat==CAT_SUBGHZ)?"tongueface":"redface";
         dispUntil=now+DISP_MS; wake(ALERT_PEEK);
       }
     }
     uiDirty=true;
   }
-  if(d->cat==CAT_TRACKER && !d->escalated && (now-d->firstSeen)>TRK_FOLLOW_MS){
+  // Following: with you a while AND still here after you moved (or Wi-Fi place is unknown, so
+  // we fall back to time alone). Sitting at home near the neighbours' AirTags is not following.
+  if(d->cat==CAT_TRACKER && !d->escalated && (now-d->firstSeen)>TRK_FOLLOW_MS && (!placeKnown || d->place!=placeNow)){
     d->escalated=true; if(!muted){ playRiff(RIFF_DETECT,NELEM(RIFF_DETECT),110); dispFace="neutralface"; dispUntil=now+DISP_MS; wake(ALERT_PEEK); } uiDirty=true;
   }
 }
@@ -325,6 +339,26 @@ static Cat classifyBleLite(const NimBLEAdvertisedDevice* dev, char* lbl, int lsz
 // Consistent 6-byte cache key from an SSID, so all BSSIDs of one network
 // collapse to a single log entry (FNV-1a hash).
 static void ssidKey(const char* s, uint8_t k[6]){ uint32_t h=2166136261u; for(const char*p=s;*p;p++){ h^=(uint8_t)*p; h*=16777619u; } k[0]=0xE7; k[1]=h; k[2]=h>>8; k[3]=h>>16; k[4]=h>>24; k[5]=(uint8_t)strlen(s); }
+// Hash the strongest PLACE_N access points into a place fingerprint. When over three quarters
+// of them have changed for two scans in a row, bump the place number (you moved). Fewer than 3
+// APs = can't tell places apart, so placeKnown stays off and following falls back to time.
+static void placeUpdate(int n){
+  static const int PLACE_N=12;
+  static uint32_t placeRef[PLACE_N]; static int placeRefN=0, placeLow=0;
+  uint32_t cur[PLACE_N]; int8_t rs[PLACE_N]; int cn=0;
+  for(int i=0;i<n;i++){ uint8_t* b=WiFi.BSSID(i); if(!b) continue;
+    uint32_t h=2166136261u; for(int k=0;k<6;k++){ h^=b[k]; h*=16777619u; }
+    int8_t r=WiFi.RSSI(i);
+    if(cn<PLACE_N){ cur[cn]=h; rs[cn++]=r; continue; }
+    int w=0; for(int k=1;k<cn;k++) if(rs[k]<rs[w]) w=k;   // replace the weakest kept AP
+    if(r>rs[w]){ cur[w]=h; rs[w]=r; } }
+  if(cn<3) return;                                         // too few APs to tell places apart
+  if(!placeRefN){ memcpy(placeRef,cur,cn*sizeof(uint32_t)); placeRefN=cn; placeKnown=true; return; }
+  int hit=0; for(int i=0;i<cn;i++) for(int k=0;k<placeRefN;k++) if(cur[i]==placeRef[k]){ hit++; break; }
+  if(hit*4>cn){ placeLow=0; return; }                      // over a quarter still here: same place
+  if(++placeLow<2) return;                                 // need two scans running to confirm
+  placeLow=0; memcpy(placeRef,cur,cn*sizeof(uint32_t)); placeRefN=cn; placeNow++; placeKnown=true;
+}
 static void scanWifiOnce(){
   int n=WiFi.scanNetworks(false,true);
   for(int i=0;i<n;i++){ String ss=WiFi.SSID(i); if(ss.length()==0||isIgnoredSSID(ss.c_str())) continue;  // SSID whitelist
@@ -340,6 +374,7 @@ static void scanWifiOnce(){
     for(int k=0;k<SSID_SIGS_N;k++){ if(ss.startsWith(SSID_SIGS[k].prefix)){ enq(key,SSID_SIGS[k].cat,SSID_SIGS[k].label,ss.c_str(),WiFi.RSSI(i),true,SSID_SIGS[k].active,'M'); matched=true; break; } }
     if(!matched) for(int k=0;k<OUI_SIGS_N;k++){ if(!memcmp(key,OUI_SIGS[k].oui,3)){ enq(key,OUI_SIGS[k].cat,OUI_SIGS[k].label,ss.c_str(),WiFi.RSSI(i),false,false,OUI_SIGS[k].conf); break; } } // OUI (ignore by MAC)
   }
+  placeUpdate(n);   // update the Wi-Fi place fingerprint from this same scan (following needs a move)
   WiFi.scanDelete();
 }
 // ---- WiFi promiscuous deauth/disassoc detector (its own radio window) ----
@@ -513,9 +548,11 @@ static int nrfBusy(){
 // signal during another phase is acceptable (this is not a just-in-time
 // alerter). Easier and lighter than radio coexistence.
 static void scanTask(void*){
-  // Active scan kept (Flipper/name detection needs scan responses), but duty
-  // cut from 75% to ~50% to save radio power.
-  NimBLEScan* s=NimBLEDevice::getScan(); s->setActiveScan(true); s->setInterval(160); s->setWindow(80);
+  // Passive: listen to advertisements only, never send a scan request. The device transmits
+  // nothing by default (TV-B-Gone, fired by hand, is the one exception). Flippers are matched
+  // by the service UUIDs in their advertisements; names that only arrive in scan responses are
+  // not seen. Duty ~50% (window 80 of interval 160).
+  NimBLEScan* s=NimBLEDevice::getScan(); s->setActiveScan(false); s->setInterval(160); s->setWindow(80);
   for(;;){
     // Pause background scanning while a radio-toy owns the radios/screen.
     if(mode==MODE_WATERFALL||mode==MODE_SSID||mode==MODE_TRAFFIC){ vTaskDelay(pdMS_TO_TICKS(150)); continue; }
@@ -568,7 +605,7 @@ static void serviceAnim(){ if(!g_anim){ animFaceNow=nullptr; return; } uint32_t 
     FaceStep s=g_anim[g_animI++]; animFaceNow=s.f; g_animUntil=now+s.ms; uiDirty=true; } }
 static const char* currentIdleFace(){
   uint32_t now=millis();
-  if(alarmActive()) return alarmFace();                          // serious threat: acidburn/zerocool, even muted
+  if(alarmActive()) return alarmFace();                          // serious threat: redface, even muted
   if(dispFace && now<dispUntil) return dispFace;                 // transient log-tier face
   int bat=M5.Power.getBatteryLevel();
   if(bat>=0 && bat<15) return "sadface";                         // low battery
@@ -590,7 +627,7 @@ static void drawIdle(){
   if(!pcReady){ M5.Display.fillScreen(BG); return; }
   auto& g=pc; bool red=alarmActive(); uint16_t bg=red?LK_RED:BG, fg=red?BG:AMBER;
   g.fillScreen(bg);
-  const ImageAsset* a=findImg(currentIdleFace()); if(a) g.drawPng(a->data,a->len,0,0);
+  drawZuse(g,currentIdleFace(),0,0,135,bg,g_faceAngle,g_faceSweep);   // vector Zuse (idle wheel/radar when active)
   g.setTextDatum(top_left); g.setTextColor(fg,bg);
   int bat=M5.Power.getBatteryLevel(); bool chg=M5.Power.isCharging(); char b[40];
   if(red){
@@ -605,9 +642,10 @@ static void drawIdle(){
     snprintf(b,sizeof(b),"%d%%",bat); g.drawString(b,31,168);
     muteGlyph(g,74,166,muted);
     g.setTextColor(fg,bg);
-    snprintf(b,sizeof(b),"CAM %lu DRN %lu HAK %lu",(unsigned long)cntCam,(unsigned long)cntDrn,(unsigned long)cntHak); g.drawString(b,6,186);
-    snprintf(b,sizeof(b),"ATK %lu TRK %lu SUB %lu",(unsigned long)cntAtk,(unsigned long)cntTrk,(unsigned long)cntSub); g.drawString(b,6,198);
-    snprintf(b,sizeof(b),"now %d  SIDE=zoom",trkCount()); g.drawString(b,6,210);
+    snprintf(b,sizeof(b),"CAM %d DRN %d HAK %d",liveCount(CAT_CAMERA),liveCount(CAT_DRONE),liveCount(CAT_HACKDEV)); g.drawString(b,6,186);   // live: matches the lists
+    snprintf(b,sizeof(b),"ATK %d TRK %d SUB %d",liveCount(CAT_ATTACK),liveCount(CAT_TRACKER),liveCount(CAT_SUBGHZ)); g.drawString(b,6,198);
+    unsigned long seen=(unsigned long)cntCam+cntDrn+cntHak+cntAtk+cntTrk+cntSub;
+    snprintf(b,sizeof(b),"seen %lu  SIDE=zoom",seen); g.drawString(b,6,210);   // since boot (cumulative, not openable)
     if(!ccPresent&&!nrfPresent){ g.drawString("no RF pack",6,224); }
   }
   if(toastMsg && millis()<toastUntil){
@@ -656,11 +694,10 @@ static void drawZoom(){
   M5.Display.setRotation(ROT_PORTRAIT); M5.Display.fillScreen(BG);
   M5.Display.setTextColor(AMBER,BG); M5.Display.setTextDatum(top_left); M5.Display.setTextSize(1);
   M5.Display.drawString("hold=open  BACK=out",6,6);
-  unsigned long cnts[6]={cntCam,cntDrn,cntHak,cntAtk,cntTrk,cntSub};
   for(int i=0;i<ZN;i++){ int yy=22+i*35; bool sel=(i==zoomCat);
     if(sel){ M5.Display.fillRect(2,yy-2,131,31,AMBER); M5.Display.setTextColor(BG,AMBER);} else M5.Display.setTextColor(AMBER,BG);
     M5.Display.setTextSize(2); M5.Display.setTextDatum(top_left); M5.Display.drawString(ZNAMES[i],8,yy+4);
-    char b[8]; snprintf(b,sizeof(b),"%lu",cnts[i]); M5.Display.setTextDatum(top_right); M5.Display.drawString(b,128,yy+4); M5.Display.setTextDatum(top_left); }
+    char b[8]; snprintf(b,sizeof(b),"%d",liveCount(ZCATS[i])); M5.Display.setTextDatum(top_right); M5.Display.drawString(b,128,yy+4); M5.Display.setTextDatum(top_left); }  // live count = what the list opens
 }
 static void drawSettings(){
   M5.Display.setRotation(ROT_PORTRAIT); M5.Display.fillScreen(BG);
@@ -932,6 +969,39 @@ static void redraw(){ switch(mode){
     case MODE_SSID:drawSsid();break; case MODE_TRAFFIC:trafInit();break; case MODE_TVBG:drawTvbg();break;
     case MODE_FINDER:drawFinder();break; } uiDirty=false; }
 
+// ---- Home idle wheel/radar (vector only, same idea as FUD-Deck) ----
+// Now and then on a calm Home, Zuse's features spin one eased turn inside the rim, or a radar
+// beam sweeps the face from 12 o'clock. Any blink/glance, toast, alarm, mode change or sleep
+// ends it. Costs CPU for ~1.6-2.6 s, no flash and no RAM (the frame is regenerated geometry).
+enum : uint8_t { WHEEL_NONE, WHEEL_SPIN, WHEEL_SWEEP };
+static uint8_t wheelKind=WHEEL_NONE, wheelWant=WHEEL_NONE;
+static uint32_t wheelStart=0, wheelFrame=0, wheelNext=0;
+static const uint32_t SPIN_MS=1600, SWEEP_MS=2600;
+// 30-90 s: the screen dims after a while untouched, so this must come sooner to be seen.
+static void wheelSchedule(){ wheelNext=millis()+30000+esp_random()%60000; }
+static void wheelStop(){ if(wheelKind==WHEEL_NONE) return; wheelKind=WHEEL_NONE; g_faceAngle=0; g_faceSweep=-1; uiDirty=true; wheelSchedule(); }
+static void homeAnimNow(int kind){ wheelStop(); wheelWant=(uint8_t)kind; wheelNext=millis(); }   // dev: 1 spin, 2 sweep, 0 random
+static bool wheelCalm(){ uint32_t now=millis();
+  return mode==MODE_IDLE && displayOn && !alarmActive() && !(toastMsg&&now<toastUntil) && g_anim==nullptr; }
+static void homeAnimTick(){
+  uint32_t now=millis();
+  if(wheelKind!=WHEEL_NONE){
+    uint32_t t=now-wheelStart, dur=(wheelKind==WHEEL_SPIN)?SPIN_MS:SWEEP_MS;
+    if(!wheelCalm() || t>=dur){ wheelStop(); return; }
+    if(now-wheelFrame<33) return;   // ~30 fps cap
+    wheelFrame=now; float u=(float)t/dur;
+    g_faceAngle = (wheelKind==WHEEL_SPIN) ? 180.0f*(1-cosf(u*(float)M_PI)) : 0;    // eased, one turn
+    g_faceSweep = (wheelKind==WHEEL_SWEEP) ? fmodf(270.0f+360.0f*u,360.0f) : -1;   // from 12 o'clock
+    uiDirty=true; return;
+  }
+  if(!wheelCalm() || (int32_t)(now-wheelNext)<0) return;
+  // Start one. Hold off the blink/glance picker so its face change does not end the wheel.
+  wheelKind = wheelWant ? wheelWant : ((esp_random()&1)?WHEEL_SPIN:WHEEL_SWEEP);
+  wheelWant=WHEEL_NONE; wheelStart=wheelFrame=now;
+  animNext=now+((wheelKind==WHEEL_SPIN?SPIN_MS:SWEEP_MS)+500);
+  g_faceAngle=0; g_faceSweep=-1; uiDirty=true;
+}
+
 // ================= input =================
 static bool aLong=false,bLong=false; static uint32_t lastTap=0,prevTap=0;
 static void goHome(){ mode=MODE_IDLE; textZoom=false; logFilter=-1; uiDirty=true; }
@@ -1044,7 +1114,12 @@ static void buttons(){
   }
 }
 
+// Bench serial telemetry. Included here, after the globals it reads, so it stays a
+// single self-contained unit (state / shot / ver / help; fake only under FUD_BENCH).
+#include "serial_telemetry.h"
+
 // ================= setup / loop =================
+#if !defined(FUD_RADIOTEST) && !defined(FUD_ANIMTEST)
 void setup(){
   auto cfg=M5.config(); cfg.internal_imu=true; cfg.internal_spk=true; M5.begin(cfg);
   setCpuFrequencyMhz(160);            // cooler + lighter; plenty for our load
@@ -1070,9 +1145,11 @@ void setup(){
   lastDetection=millis(); lastWake=millis(); redraw();
   playRiff(RIFF_BOOT,NELEM(RIFF_BOOT),185,3);   // Zuse: "Greetings Programs" x3 (louder)
   Serial.printf("FUD Firmware %s up. Find Unwelcome Devices.\n", FUD_VERSION);
+  Serial.println("[telem] ready: state, shot, ver, help");
 }
 void loop(){
   M5.update();
+  telem::poll();   // bench serial: state / shot / ver (read-only; fake under FUD_BENCH)
   serviceRiff();   // advance Zuse's current 8-bit phrase (non-blocking)
   bool btnEdge = M5.BtnA.wasPressed()||M5.BtnB.wasPressed()||M5.BtnA.wasReleased()||M5.BtnB.wasReleased();
   // (song stops via Settings toggle or when it finishes; navigation no longer kills it)
@@ -1128,12 +1205,12 @@ void loop(){
   // active hostile: beep + flash every 15 s
   if(alarmActive() && !muted && now-lastAlarmBeep>ALARM_BEEP_MS){ lastAlarmBeep=now; alarmSound(); wake(ALERT_PEEK); } // sound only when not muted; face persists via alarmActive
   // acked hostile still present: silent reminder every ~7 min
-  if(!alarmActive() && ackedAttackPresent() && now-lastReshow>RESHOW_MS){ lastReshow=now; if(mode==MODE_IDLE){ dispFace="zerocool"; dispUntil=now+2000; uiDirty=true; } }
+  if(!alarmActive() && ackedAttackPresent() && now-lastReshow>RESHOW_MS){ lastReshow=now; if(mode==MODE_IDLE){ dispFace="redface"; dispUntil=now+2000; uiDirty=true; } }
 
   // idle life: animate Zuse's face while the home screen is up and calm
   if(mode==MODE_IDLE && displayOn && !alarmActive()){
     serviceAnim();
-    if(!g_anim && now>animNext){
+    if(!g_anim && wheelKind==WHEEL_NONE && now>animNext){
       if(now-lastDetection > 5*60*1000) playAnim(A_YAWN,NELEM(A_YAWN));       // bored
       else { int pick=(now/1000)%4;
         if(pick==0) playAnim(A_GLANCE,NELEM(A_GLANCE));                        // scan the room
@@ -1143,6 +1220,7 @@ void loop(){
     }
     static uint32_t lastHomeRefresh=0; if(now-lastHomeRefresh>1000){ lastHomeRefresh=now; uiDirty=true; } // keep radio letter + counts live
   }
+  // homeAnimTick();   // DISABLED pending a hang investigation: the wheel/radar render path hung the main loop
   // redraw only when the resolved idle face actually changes
   static const char* lastFace=""; if(mode==MODE_IDLE && displayOn){ const char* f=currentIdleFace(); if(f!=lastFace){ lastFace=f; uiDirty=true; } }
   // clear a finished toast
@@ -1154,3 +1232,123 @@ void loop(){
   if(uiDirty){ if(displayOn && mode!=MODE_WATERFALL) redraw(); uiDirty=false; }
   delay(displayOn?5:25);   // poll slower when the screen is off (saves power)
 }
+#else
+#ifdef FUD_RADIOTEST
+// ================ Display + concurrent-radio power test (FUD_RADIOTEST) ================
+// A BACKGROUND task (core 0) runs ALL radios concurrently and continuously (BLE non-blocking +
+// WiFi coexistence + RF Pack SPI radios). The MAIN loop (core 1) redraws the normal face at a
+// stepped rate: off, 1 Hz, 4 Hz, then continuous (animation rate). So display current and radio
+// current hit the 3.3 V rail AT THE SAME TIME on different cores, which is what browned out. The
+// continuous step should reproduce the crash (test validation); if 1/4 Hz survive and only CONT
+// reboots, normal UI is safe under concurrent all-radio scanning. RTC-tracked; resumes past a crash.
+RTC_NOINIT_ATTR static uint32_t rtMagic;
+RTC_NOINIT_ATTR static int rtStep;
+RTC_NOINIT_ATTR static uint32_t rtSecs;
+static volatile unsigned long rtScanCycles=0;
+static void rtScanTask(void*){
+  NimBLEScan* s=NimBLEDevice::getScan(); s->setActiveScan(false); s->setInterval(160); s->setWindow(80); s->setMaxResults(0);
+  uint32_t lastWifi=0;
+  for(;;){
+    if(!s->isScanning()) s->start(6000,false);                         // BLE: non-blocking, continuous
+    if(millis()-lastWifi>4000){ lastWifi=millis(); scanWifiOnce(); }   // WiFi (coexists with BLE)
+    if(nrfPresent) nrfScan24();
+    if(ccPresent)  ccScanSubGhz();
+    Evt e; while(xQueueReceive(evtQ,&e,0)==pdTRUE){}                   // discard: no alerts
+    rtScanCycles++;
+  }
+}
+struct RtStep { const char* name; int dispMs; };   // dispMs: 0 = display off, <0 = continuous, else redraw interval ms
+static const RtStep RT[] = {
+  {"all radios, display OFF",   0},
+  {"all radios, display 1Hz", 1000},
+  {"all radios, display 4Hz",  250},
+  {"all radios, display CONT",  -1},
+};
+void setup(){
+  auto cfg=M5.config(); cfg.internal_imu=false; cfg.internal_spk=false; M5.begin(cfg);
+  setCpuFrequencyMhz(160);
+  Serial.begin(115200); delay(400);
+  Serial.printf("\n[radiotest] boot reset_reason=%d (1=power 4=panic 5=intwdt 6=taskwdt 9=brownout 11=usb)\n",(int)esp_reset_reason());
+  int startStep=0;
+  if(rtMagic==0xF00DBEEF){ Serial.printf("[radiotest] *** REBOOTED during step %d at ~%lus, resuming after ***\n", rtStep, (unsigned long)rtSecs); startStep=rtStep; }
+  rtMagic=0xF00DBEEF;
+  pinMode(CC_CS,OUTPUT);   csHi(CC_CS);
+  pinMode(NRF_CSN,OUTPUT); csHi(NRF_CSN);
+  pinMode(NRF_CE,OUTPUT);  digitalWrite(NRF_CE,LOW);
+  rfspi.begin(RF_SCK,RF_MISO,RF_MOSI,-1);
+  ccPresent=ccProbe(); nrfPresent=nrfProbe();
+  Serial.printf("[radiotest] RF Pack: CC1101=%d nRF24=%d\n", ccPresent, nrfPresent);
+  NimBLEDevice::init("");
+  evtQ=xQueueCreate(96,sizeof(Evt));
+  WiFi.mode(WIFI_STA); WiFi.disconnect(); esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  xTaskCreatePinnedToCore(rtScanTask,"rtscan",8192,nullptr,1,nullptr,0);   // all radios on core 0, continuous
+  const int RT_N=sizeof(RT)/sizeof(RT[0]);
+  if(startStep>=RT_N){ Serial.println("[radiotest] ===== DONE: last step crashed; all attempted ====="); rtMagic=0; }
+  for(int step=startStep; step<RT_N; step++){
+    const RtStep& m=RT[step]; rtStep=step+1; rtSecs=0;
+    Serial.printf("[radiotest] ===== STEP %s (display + all radios concurrent) =====\n", m.name);
+    M5.Display.setBrightness(m.dispMs==0 ? 0 : BRIGHT_NORMAL);
+    uint32_t t0=millis(), lastHb=0, lastDraw=0; unsigned long draws=0;
+    while(millis()-t0 < 65000){
+      if(m.dispMs!=0){ uint32_t iv=(m.dispMs<0)?0:(uint32_t)m.dispMs;
+        if(millis()-lastDraw>=iv){ lastDraw=millis(); g_faceAngle=0; g_faceSweep=-1; drawIdle(); draws++; } }  // normal static-face redraw, core 1
+      rtSecs=(millis()-t0)/1000;
+      if(millis()-lastHb>2000){ lastHb=millis();
+        Serial.printf("[radiotest] step %d t=%2lus draws=%lu scanCyc=%lu heap=%u min=%u\n",
+          step+1,(unsigned long)rtSecs,draws,rtScanCycles,(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getMinFreeHeap()); }
+      delay(m.dispMs<0?1:5);
+    }
+    Serial.printf("[radiotest] step %d DONE, survived 65s (%lu draws, scanCyc=%lu)\n", step+1, draws, rtScanCycles);
+  }
+  rtMagic=0;
+  Serial.println("[radiotest] ===== ALL STEPS PASSED, no reboot =====");
+}
+void loop(){ delay(1000); }
+
+#else
+// ===================== Animation-alone test (FUD_ANIMTEST) =====================
+// Radios OFF (no WiFi, no BLE, no scan task; the backpack sits idle but attached). Runs the
+// continuous full-screen rotated redraw (the exact draw that crashed with radios on), first at
+// 160 MHz, then at 240 MHz, 60 s+ each. Isolates the display workload from the radios, and tests
+// whether the clock is the lever (FUD-Deck runs 240 MHz and redraws only the face). RTC-tracked,
+// resumes past a step that reboots.
+RTC_NOINIT_ATTR static uint32_t atMagic;
+RTC_NOINIT_ATTR static int atStep;
+RTC_NOINIT_ATTR static uint32_t atSecs;
+struct AtStep { const char* name; int mhz; };
+static const AtStep AT[] = { {"160MHz full-redraw",160}, {"240MHz full-redraw",240} };
+void setup(){
+  auto cfg=M5.config(); cfg.internal_imu=false; cfg.internal_spk=false; M5.begin(cfg);
+  Serial.begin(115200); delay(400);
+  Serial.printf("\n[animtest] boot reset_reason=%d (1=power 4=panic 5=intwdt 6=taskwdt 9=brownout 11=usb)\n",(int)esp_reset_reason());
+  int start=0;
+  const int AT_N=sizeof(AT)/sizeof(AT[0]);
+  if(atMagic==0x0A417E57){ Serial.printf("[animtest] *** REBOOTED during step %d (%s) at ~%lus, resuming after ***\n", atStep, (atStep>=1&&atStep<=AT_N)?AT[atStep-1].name:"?", (unsigned long)atSecs); start=atStep; }
+  atMagic=0x0A417E57;
+  WiFi.mode(WIFI_OFF);                 // radios OFF: isolate the display workload
+  M5.Display.setBrightness(BRIGHT_NORMAL);
+  if(start>=AT_N){ Serial.println("[animtest] ===== DONE: last step crashed; all attempted ====="); atMagic=0; }
+  for(int step=start; step<AT_N; step++){
+    atStep=step+1; atSecs=0;
+    setCpuFrequencyMhz(AT[step].mhz);
+    Serial.printf("[animtest] ===== STEP %d %s (cpu now %dMHz) =====\n", step+1, AT[step].name, getCpuFrequencyMhz());
+    uint32_t t0=millis(), lastHb=0; unsigned long frames=0;
+    while(millis()-t0 < 65000){
+      float u=((millis()-t0)%2000)/2000.0f;              // 2 s spin cycle
+      g_faceAngle=180.0f*(1-cosf(u*(float)M_PI)); g_faceSweep=-1;
+      drawIdle();                                        // full-screen rotated redraw + push
+      frames++;
+      atSecs=(millis()-t0)/1000;
+      if(millis()-lastHb>2000){ lastHb=millis();
+        Serial.printf("[animtest] step %d t=%2lus frames=%lu cpu=%d heap=%u min=%u\n",
+          step+1,(unsigned long)atSecs,frames,getCpuFrequencyMhz(),(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getMinFreeHeap()); }
+    }
+    g_faceAngle=0; g_faceSweep=-1;
+    Serial.printf("[animtest] step %d DONE, survived 65s (%lu frames)\n", step+1, frames);
+  }
+  atMagic=0;
+  Serial.println("[animtest] ===== ALL STEPS PASSED (animation alone, radios off) =====");
+}
+void loop(){ delay(1000); }
+#endif
+#endif

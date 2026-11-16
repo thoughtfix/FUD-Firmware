@@ -39,6 +39,23 @@ Hikvision, Verkada, Avigilon, Axis, Axon). What remains:
   rotation using service UUID + manufacturer-data shape + RSSI trajectory +
   advertising interval. This would also make the Finder stick to an AirTag.
 
+- **Per-radio scan toggles.** A setting to enable or disable each radio for scanning on
+  its own: BLE, Wi-Fi, and, when the RF Pack is present, sub-GHz (CC1101) and 2.4 GHz
+  (nRF24). Threat models differ. Some users do not care about BLE, some do not care about
+  sub-GHz. Turning off a radio also cuts power and eases the ESP32's 2.4 GHz coexistence
+  load when BLE and Wi-Fi run together. Saved in NVS with the other settings, and the scan
+  cycle skips the disabled phases.
+
+- **All radios when powered.** A scan-mode setting (Auto / Always concurrent / Always saver).
+  Auto runs every radio concurrently on external power and falls back to the current
+  sequential scan on battery. Needs the concurrent-scan backport first (FUD-Deck's
+  `cycleConcurrent`: non-blocking BLE + Wi-Fi coexistence, with the RF Pack SPI radios
+  alongside). Driven by the 3.3 V budget: the LF33 (~500 mA) can carry concurrent all-radio
+  scanning with the display kept light, so default to concurrent only when powered. Clamp the
+  display redraw to about 5 FPS (monitoring device, not a game) so its current spikes stay
+  sparse and do not pile onto a radio spike. Confirmed on the bench that all four radios run
+  concurrently with the display off; the risk is heavy display during heavy scan.
+
 ## Separate effort
 
 - **Alert tuning (deauth and 2.4 jam false positives).** The 2.4 GHz jam trip

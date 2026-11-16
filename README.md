@@ -64,7 +64,7 @@ firmware options.
 
 ## Meet Zuse
 <p align="center">
-  <img src="images/defaultsmile.png" alt="Default Smile">
+  <img src="images/zuse-home.png" alt="Zuse idle home screen" width="30%">
 </p>
 Zuse (named for Konrad Zuse, and a character played by Michael Sheen in 2010)
 is the friendly face watching out for you. He loves to share FUD with you.
@@ -163,15 +163,24 @@ Mute and Snooze All are different on purpose.
 
 ## What the faces mean
 
-Zuse is the mascot. His face reflects what is going on.
+Zuse is the mascot, and his face reflects what is going on. The faces are vector
+art drawn on the fly (no bitmaps), so Zuse can blink, glance, and sweep between
+events.
 
 - Smiley: idle, all clear.
-- Angry red face: a hacking device or attack is nearby.
-- Lord Nikon's lens: a camera or surveillance device.
-- Zero Cool's Skull: an active attack in progress.
-- Acid Burn's Flame: a hacking tool is present.
+- Angry red face on a red screen: a hacking device (like a Flipper) or an active
+  attack. These serious threats share the one red alert face, with the threat's
+  name underneath and `FRONT=info` to open its detail.
 - Sad: low battery.
-- Playful expressions in between: because Zuse likes you.
+- Blinks, winks, glances, and yawns in between: idle personality, because Zuse
+  likes you.
+
+Cameras and trackers do not take over the face; they are logged quietly and
+counted on the home screen (see Alerts).
+
+<p align="center">
+  <img src="images/zuse-alert.png" alt="Red ALERT screen: Flipper Zero detected" width="30%">
+</p>
 
 ## Alerts
 
@@ -280,6 +289,10 @@ wee little machine, and as of this writing is the only other firmware tailored t
 the Pingequa RF Pack S3. Finally, thanks to
 [OUI-SPY](https://github.com/colonelpanichacks/oui-spy) for inspiring wearable
 scan and alert devices.
+
+Zuse now renders as flat-color vectors instead of PNGs. The vector face engine is
+backported from FUD-Deck (thoughtfix), shared across the FUD family under the same
+GPL-3.0 license. The hostile faces without vector art yet still draw from PNG.
 
 A few more that shaped FUD: [m5stick-nemo](https://github.com/n0xa/m5stick-nemo)
 for the TV-B-Gone approach on M5Stick hardware,
