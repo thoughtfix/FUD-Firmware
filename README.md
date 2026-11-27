@@ -8,16 +8,33 @@
 point.)
 
 A wearable surveillance-awareness device. FUD Firmware runs on an M5Stack
-StickS3 with a Pingequa RF Pack S3, and Zuse (its onboard mascot) watches the
-airwaves around you for cameras, trackers, and active wireless attacks. Wear it
-or clip it to a bag. Zuse is passive by design: no recording, no storage, no
-social features. He will not replace your primary security devices, but he can
-give you a clue that it is time to deploy them.
+StickS3 (with a Pingequa RF Pack S3) or an M5Stack Cardputer ADV (with a
+Pingequa Hydra RF), and Zuse (its onboard mascot) watches the airwaves around you
+for cameras, trackers, and active wireless attacks. Wear it or clip it to a bag.
+Zuse is passive by design: no recording, no cloud, no social features. He will
+not replace your primary security devices, but he can give you a clue that it is
+time to deploy them.
 
-FUD was designed to work with the Pingequa RF Pack S3 for the M5Stack StickS3.
-The RF Pack is optional. On a bare StickS3 the WiFi and Bluetooth scanners still
-run; Zuse simply switches the sub-GHz and 2.4 GHz scanners off when no pack is
-detected.
+The RF boards are optional. On a bare StickS3 or Cardputer ADV the WiFi and
+Bluetooth scanners still run; Zuse simply switches the sub-GHz and 2.4 GHz
+scanners off when no RF board is detected.
+
+## Supported hardware
+<p align="center">
+  <img src="images/cardputer-and-stick.jpg" alt="StickS3 with the RF Pack S3 and Cardputer ADV with the Hydra RF and a GPS unit, both running FUD" width="80%">
+</p>
+
+One firmware image runs on both devices. It recognizes the board at boot and
+turns on the matching screen layout, controls, and features.
+
+| | M5Stack StickS3 | M5Stack Cardputer ADV |
+|---|---|---|
+| Screen | Portrait, two buttons | Landscape, keyboard |
+| RF board (optional) | Pingequa RF Pack S3 | Pingequa Hydra RF |
+| Sub-GHz waterfall | 433 MHz | 433 MHz, plus 915 MHz (902 to 928) |
+| GPS (optional) | No | Any NMEA GPS on the Grove port |
+| SD card | No | Detection log, and opt-in wardriving |
+| IR (TV-B-Gone) | Built in | Built in |
 
 The wearable 3D model for this was recently REMOVED from Printables, and is not 
 in this repo. The 
@@ -26,19 +43,20 @@ is licensed with MakerWorld's "Exclusive License" so hosting derivative works
 anywhere else is a license violation. Please encourage any developer using 
 platform-exclusive licensing to use more open licensing.
 
-## RF Pack additional features
+## RF board additional features
 
-FUD runs on a StickS3 alone, watching WiFi and Bluetooth. Attach the Pingequa
-RF Pack S3 and Zuse picks up two more radios, and the features that ride on
-them:
+FUD runs on a StickS3 or Cardputer ADV alone, watching WiFi and Bluetooth.
+Attach the Pingequa RF Pack S3 (StickS3) or the Pingequa Hydra RF (Cardputer
+ADV) and Zuse picks up two more radios, and the features that ride on them:
 
 - **Sub-GHz 433 MHz (CC1101):** nearby key fobs, tire sensors, remotes, and
   replay attacks, plus a live 433 MHz waterfall.
 - **2.4 GHz sweep (nRF24):** broadband jammer detection, a full 2.4 GHz
   waterfall, and the traffic graph.
 
-Same binary either way. No pack, these stay off. Pack attached, Zuse turns them
-on automatically.
+Same binary either way. No RF board, these stay off. Board attached, Zuse turns
+them on automatically. On the Cardputer ADV the waterfall also covers the
+902 to 928 MHz band, for the Hydra RF's 915 MHz front end.
 
 ## What FUD is (and is not)
 
@@ -115,7 +133,7 @@ plenty fast for something you carry while traveling. Windows are long enough
 to recognize a pattern (a burst of deauth frames, a tracker that keeps
 showing up), which matters more than never missing a single frame.
 
-## Controls
+## Controls (StickS3)
 <p align="center">
   <img src="docs/buttons.jpg" alt="FUD buttons" width="30%">
 </p>
@@ -134,6 +152,8 @@ everywhere: **Front tap = next, Front hold = select, Side tap = back, Side hold
 - **Detail screens with nothing to select:** Front hold zooms the text large
   and scrolls it; a Front tap returns.
 - **Double-tap the body:** acknowledge and clear the current alert.
+- **Both buttons held one second:** lock the screen (see Battery and display).
+  Any button wakes it.
 - **Both buttons held ten seconds:** hard reset. Clears the detection log and
   counters; your saved Ignore list and mute setting are kept.
 - **Left Button** ESP32 control. This button is not touched in FUD firmware and
@@ -148,9 +168,31 @@ The little letter next to SCAN on the home screen is the radio Zuse has on the
 antenna this moment: B for Bluetooth, W for WiFi, S for sub-GHz, N for the
 2.4 GHz sweep.
 
-Zuse remembers mute, volume, and the alert filter across reboots. Brightness is
-also adjustable but resets to normal on reboot, so a too-dim screen can never
-lock you out.
+Zuse remembers every setting across reboots: brightness, wake sensitivity,
+volume, mute, the alert filter, Silent, and (on the Cardputer ADV) SD Log.
+
+## Controls (Cardputer ADV)
+<p align="center">
+  <img src="images/cardputer-home.jpg" alt="Cardputer ADV home screen: Zuse with camera, hacker, and tracker counts" width="60%">
+</p>
+
+The keyboard does the same jobs as the StickS3's buttons, one key each. Press
+**H** on any screen to see them all; any key closes the help screen.
+
+| Key | Action |
+|---|---|
+| Arrows | Move through tiles, lists, and menus |
+| Enter | Select, open, confirm |
+| Esc | Back. On Home, opens the Status screen |
+| Q | Home (return to scanning) |
+| M | Mute or unmute |
+| A | Acknowledge the current alert. On the Status screen, Snooze All |
+| L | Lock the screen. Any key wakes it |
+| H | Help: every key on one screen |
+
+The header shows what is on: TX while Silent is off, WD while wardriving, MUTE,
+and the radio letter. Screens with special keys, like TV-B-Gone, name them
+along the bottom.
 
 Mute and Snooze All are different on purpose.
 
@@ -213,15 +255,23 @@ quiet across all of its radios at once, not one at a time.
 
 ## Settings
 
-Reached from Status > Settings. Each row changes on Front hold.
+Reached from Status > Settings. Each row changes on Front hold (Enter on the
+Cardputer ADV).
 
-- **Brightness:** HIGH, MED, LOW, DIM. Resets to HIGH on reboot.
+- **Brightness:** HIGH, MED, LOW, DIM.
+- **Shake:** Lo, Med, Hi. How much movement wakes the screen (or keeps it on).
+  Hi wakes on a gentle pick-up. Lo needs a deliberate shake, so walking around
+  with it stays dark. Med is the default.
 - **Volume:** MAX, LOUD, MED, LOW, MIN, MUTE. Holding steps down (louder to
   quieter) and wraps from MUTE back to MAX, beeping a preview at each level.
   MED is the default. Remembered across reboots. (This is the loudness of the
   device's own sounds. It is separate from Mute, which silences alerts entirely
   while still logging.)
 - **Alert Filter:** ALL, MED, HIGH. The minimum-confidence gate described above.
+- **Silent:** ON by default. WiFi scans stay passive: FUD listens and sends no
+  probe requests. Turning it OFF shows a warning first, because active probes let
+  nearby receivers log the device, and a red TX stays on screen while it is off.
+- **SD Log** (Cardputer ADV): ON by default when a card is in. See below.
 - **End of Line:** A tribute. Hold again to stop.
 
 ## Toys
@@ -231,11 +281,14 @@ background scan. Opening one pauses scanning while you use it; Side tap backs ou
 to the Toys menu.
 
 - **Waterfall:** a live scrolling spectrum. Front tap switches band between the
-  2.4 GHz sweep (nRF24) and the 433 MHz sub-GHz band (CC1101). Needs the RF Pack.
+  2.4 GHz sweep (nRF24) and the 433 MHz sub-GHz band (CC1101), plus 915 MHz on
+  the Cardputer ADV. Needs an RF board. Navy is quiet, then blue, green, yellow
+  and red for more signal. On 2.4 GHz the color is how often a channel is busy.
+  On sub-GHz it is signal strength above the noise floor.
 - **SSID Scan:** the WiFi networks around you, strongest first, with channel,
   signal, and an O for open networks. Refreshes every few seconds.
 - **Traffic:** a rolling graph of how busy the 2.4 GHz band is, green to red,
-  with a running peak. Needs the RF Pack.
+  with a running peak. Needs an RF board.
 - **TV-B-Gone:** points the built-in IR at a TV and blasts a set of power codes
   for the common brands (Samsung, LG, Sony, Vizio, TCL, Toshiba, Panasonic,
   Philips). Front fires; Side stops. The one sanctioned transmit in the whole
@@ -249,10 +302,43 @@ to the Toys menu.
   straight here from the log: open any trackable entry and choose Find. Note
   that AirTags rotate their Bluetooth address every few minutes, so a locked
   AirTag can drop to "signal lost" and you simply pick it again.
+- **GPS** (Cardputer ADV with a GPS on the Grove port): fix, satellites,
+  position, and the UTC time. FUD only listens to the module and finds its pin
+  and baud rate (115200, 9600, or 38400) on its own. The first fix also sets the
+  clock used by the SD log.
+- **Wardrive** (Cardputer ADV with a GPS and an SD card): a full wardriving
+  mode. See below.
+
+## SD card log and wardriving (Cardputer ADV)
+<p align="center">
+  <img src="images/cardputer-hydra-side.jpg" alt="Cardputer ADV on the Hydra RF in a clear case, with the SD slot on the side and the GPS unit behind" width="60%">
+</p>
+
+Both stay on the card. Nothing is uploaded or sent anywhere.
+
+- **SD Log** writes one line per new detection to `/fud/YYYYMMDD.csv` (time,
+  category, label, name, MAC, signal, confidence). Times are UTC once GPS has
+  set the clock. Before that the file is `/fud/bootNNNN.csv` and times count
+  seconds since power-on.
+- **Wardrive** (Toys > Wardrive) is a mode, not a background setting. It warns
+  first, because the file shows where you went, and runs only while its screen
+  is open. Every WiFi network and Bluetooth LE device heard is saved once, with
+  its GPS position, to `/fud/wigle_YYYYMMDD_HHMMSS.csv` (WiGLE CSV 1.6, one file
+  per session). Nothing is saved without a GPS fix.
+  - Bluetooth and WiFi scans run back to back, about one round every five
+    seconds. Sub-GHz and the 2.4 GHz sweep pause.
+  - Detection keeps running. Cameras, ALPR (Flock, Raven), drones, hacker
+    devices, and trackers are counted on screen and still alert. A acknowledges
+    an alert without leaving the mode.
+  - The screen shows the GPS state ("No GPS fix. Not saving." in red), the count
+    saved, how many were new in the last minute, and the last name heard.
+  - L locks the screen and wardriving continues. Esc stops it.
+  - Uploading to WiGLE is up to you.
 
 ## Build and flash
 
-FUD is a PlatformIO project. With the StickS3 connected over USB-C:
+FUD is a PlatformIO project. With the StickS3 or Cardputer ADV connected over
+USB-C:
 
 ```
 pio run            # build
@@ -260,10 +346,13 @@ pio run -t upload  # build and flash
 pio device monitor # serial log (115200)
 ```
 
-The target is the `sticks3` environment in `platformio.ini`. First build pulls
-M5Unified, NimBLE-Arduino (2.x), and IRremoteESP8266, and a pre-build step
-embeds the face images. The RF Pack is optional; the same binary runs on a bare
-StickS3 with the sub-GHz and 2.4 GHz scanners disabled.
+The target is the `sticks3` environment in `platformio.ini`, and it builds the
+one image for both devices. First build pulls M5Unified, NimBLE-Arduino (2.x),
+and IRremoteESP8266. The RF boards are optional; the same binary runs on a bare
+StickS3 or Cardputer ADV with the sub-GHz and 2.4 GHz scanners disabled.
+
+On a Cardputer ADV that boots a launcher from its SD card, flashing over USB
+replaces the launcher. Reinstall the launcher afterward if you want it back.
 
 Put your own devices in `src/user_ignore.h` so Zuse never alerts on them.
 
@@ -271,10 +360,16 @@ Put your own devices in `src/user_ignore.h` so Zuse never alerts on them.
 
 The home screen shows the battery level, with a plus sign while charging. The
 screen runs at normal brightness for fifteen seconds, then goes dark to save
-power. Pick it up, rotate it, or press a button to wake it. When a threat
-appears while the screen is dark, Zuse lights it for about five seconds to catch
-your eye, then lets it go dark again, so he gets your attention without drawing
-everyone else's.
+power. Pick it up, rotate it, or press a button to wake it (Settings > Shake
+sets how much movement it takes). When a threat appears while the screen is
+dark, Zuse lights it for about five seconds to catch your eye, then lets it go
+dark again, so he gets your attention without drawing everyone else's.
+
+The screen is the biggest drain on the battery. To keep it dark for long
+stretches, lock it: L on the Cardputer ADV, or both buttons for one second on
+the StickS3. FUD shows "LOCKING", then the screen stays off. Movement and
+double-taps are ignored, and any key or button wakes it. Threat alerts still
+light it, unless muted. Every boot starts unlocked.
 
 ## Attributions and thanks
 

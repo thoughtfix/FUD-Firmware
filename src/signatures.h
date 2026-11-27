@@ -15,18 +15,56 @@ static const BleSig BLE_SIGS[] = {
   { 0xFEED, 0xFFFF, CAT_TRACKER, "Tile",      'H' },
   { 0xFEEC, 0xFFFF, CAT_TRACKER, "Tile",      'H' },
   { 0xFD5A, 0xFFFF, CAT_TRACKER, "SmartTag",  'H' },  // Samsung SmartTag
-  { 0xFEAA, 0xFFFF, CAT_TRACKER, "GoogleFMD", 'M' },  // Google Find My (Eddystone-shared)
   { 0xFFFF, 0x09C8, CAT_CAMERA,  "Flock",     'H' },  // Flock/XUNTONG mfg company ID
   { 0xFFFF, 0x034D, CAT_CAMERA,  "Axon",      'H' },  // TASER Intl (Axon body cams)
   { 0xFFFA, 0xFFFF, CAT_DRONE,   "RemoteID",  'M' },  // ASTM F3411 drone Remote ID
+  // From FUD-Deck's 2026-11-13 backport (SquachWatch-CYD, Talking Sasquach, GPL-3.0, commits
+  // 2026-10-14 to 2026-11-03). Service UUIDs match the advertised list OR service data.
+  { 0xFD84, 0xFFFF, CAT_TRACKER, "Tile",      'H' },  // Tile's third SIG-assigned UUID
+  { 0xFCB2, 0xFFFF, CAT_TRACKER, "Tracker",   'H' },  // DULT: any maker's tag away from its owner
+  { 0xFE33, 0xFFFF, CAT_TRACKER, "Chipolo",   'H' },
+  { 0xFE65, 0xFFFF, CAT_TRACKER, "Chipolo",   'H' },
+  { 0xFFFF, 0x08C3, CAT_TRACKER, "Chipolo",   'M' },
+  { 0xFC81, 0xFFFF, CAT_CAMERA,  "Axon",      'H' },  // Axon's SIG-assigned UUIDs
+  { 0xFE6B, 0xFFFF, CAT_CAMERA,  "Axon",      'H' },
+  { 0xFE6C, 0xFFFF, CAT_CAMERA,  "Axon",      'H' },
+  { 0x3100, 0xFFFF, CAT_CAMERA,  "Raven",     'M' },  // Flock Raven gunshot sensor
+  { 0x3200, 0xFFFF, CAT_CAMERA,  "Raven",     'M' },
+  { 0x3300, 0xFFFF, CAT_CAMERA,  "Raven",     'M' },
+  { 0x3400, 0xFFFF, CAT_CAMERA,  "Raven",     'M' },
+  { 0x3500, 0xFFFF, CAT_CAMERA,  "Raven",     'M' },
+  // Camera glasses by company ID. Meta's IDs are on Quest headsets too: a Meta radio, not proof
+  // of a camera, so M. The 0xFD5F composite in main.cpp is the specific one.
+  { 0xFFFF, 0x01AB, CAT_CAMERA,  "Meta",      'M' },
+  { 0xFFFF, 0x0D53, CAT_CAMERA,  "Luxottica", 'M' },  // Ray-Ban's maker
+  { 0xFFFF, 0x03C2, CAT_CAMERA,  "Snap",      'M' },  // Snap Spectacles
+  { 0xFFFF, 0x060C, CAT_CAMERA,  "Vuzix",     'M' },
+  { 0xFE45, 0xFFFF, CAT_CAMERA,  "Snap",      'M' },
+  { 0xFEB7, 0xFFFF, CAT_CAMERA,  "Meta",      'M' },  // also Quest headsets: cameras, Meta hardware
+  { 0xFEB8, 0xFFFF, CAT_CAMERA,  "Meta",      'M' },
+  // Card skimmers: Bluetooth serial-port profile (SPP) in a BLE advert (SquachWatch-CYD).
+  // Classic-only skimmers (most HC-05s) need BT Classic inquiry, which we do not run.
+  { 0x1101, 0xFFFF, CAT_HACKDEV, "Skimmer",   'M' },
 };
 static const int BLE_SIGS_N = sizeof(BLE_SIGS)/sizeof(BLE_SIGS[0]);
 
 // ---- Special composites / payload checks (handled in code, not the table) ----
 // Meta/Ray-Ban glasses: Luxottica CID 0x0D53 AND Meta svc UUID 0xFD5F in the
 //   SAME advert (single 0xFD5F false-positives on phones running Meta apps).
+// Real Ray-Ban Meta glasses send 0x01AB (Meta) with 0xFD5F (SquachWatch-CYD, two captures).
 #define META_CID   0x0D53
+#define META_CID2  0x01AB
 #define META_SVC   0xFD5F
+// Flipper Zero advertises one of three fixed service UUIDs (one per case colour), so a renamed
+// Flipper is still caught, and so is one whose name only arrives in a scan response (we scan
+// passively). Flipper's company ID 0x0E29 is NOT used: only the BUSY Bar desk sign sends it.
+#define FLIPPER_SVC0  0x3081
+#define FLIPPER_SVC_N 3
+// Google Find Hub (FMDN): 0xFEAA service data whose frame type is 0x40 or 0x41. Eddystone shop
+// beacons share 0xFEAA, so the UUID alone is not a tracker.
+#define FMDN_SVC   0xFEAA
+// Flock Safety's own 128-bit BLE service (POTENTIAL_IMPROVEMENTS.md, SquachWatch-CYD).
+#define FLOCK_UUID128 "e8ccbb38-9532-46a8-9fe5-1814df172e6f"
 // Apple Find My / AirTag: company 0x004C with offline-finding type byte 0x12.
 #define APPLE_CID  0x004C
 #define FINDMY_TYPE 0x12
@@ -39,6 +77,10 @@ static const SsidSig SSID_SIGS[] = {
   { "AB4-",       CAT_CAMERA,  "Axon",   false },
   { "AXON-",      CAT_CAMERA,  "Axon",   false },
   { "Pineapple_", CAT_HACKDEV, "PineAP", true  },  // WiFi Pineapple (hacker device)
+  // Flock setup and camera networks (SquachWatch-CYD, Flock-You #43). All SSID prefixes are
+  // matched case-insensitively. A bare "Flock" SSID is matched exactly in main.cpp.
+  { "flock-",       CAT_CAMERA, "Flock", false },
+  { "Flock Camera", CAT_CAMERA, "Flock", false },
 };
 static const int SSID_SIGS_N = sizeof(SSID_SIGS)/sizeof(SSID_SIGS[0]);
 
@@ -123,6 +165,23 @@ static const OuiSig OUI_SIGS[] = {
   {{0x24,0x2B,0xD6}, CAT_CAMERA, "Ring",     'H'},
   {{0x00,0xB4,0x63}, CAT_CAMERA, "Ring",     'H'},
   {{0x50,0xE4,0x67}, CAT_CAMERA, "Ring",     'H'},
+  // From FUD-Deck's 2026-11-13 backport (SquachWatch-CYD, registry-checked there).
+  // WatchGuard VIDEO (Motorola), not the firewall maker WatchGuard Technologies.
+  {{0x00,0x1D,0x96}, CAT_CAMERA, "WatchGuard",'M'},   // body cams
+  {{0x00,0x23,0xBD}, CAT_CAMERA, "DigitalAlly",'M'},  // body cams
+  {{0xD4,0x11,0xD6}, CAT_CAMERA, "ShotSpotter",'H'},  // gunshot sensors
+  {{0xD4,0x2D,0xC5}, CAT_CAMERA, "i-PRO",    'H'},    // Panasonic security and body cams
+  {{0x3C,0xA0,0x70}, CAT_CAMERA, "Blink",    'M'},    // Blink by Amazon's own blocks
+  {{0x70,0xAD,0x43}, CAT_CAMERA, "Blink",    'M'},
+  {{0x74,0x13,0x48}, CAT_CAMERA, "Blink",    'M'},
+  {{0x74,0xAB,0x93}, CAT_CAMERA, "Blink",    'M'},
+  {{0xC8,0x19,0xD8}, CAT_CAMERA, "Blink",    'M'},
+  {{0xF0,0x74,0xC1}, CAT_CAMERA, "Blink",    'M'},
+  {{0x98,0x59,0x49}, CAT_CAMERA, "Luxottica",'M'},    // Ray-Ban / Oakley Meta
+  {{0x38,0x1D,0x14}, CAT_DRONE,  "Skydio",   'H'},
+  {{0x90,0x03,0xB7}, CAT_DRONE,  "Parrot",   'M'},
+  {{0x90,0x3A,0xE6}, CAT_DRONE,  "Parrot",   'M'},
+  {{0xA0,0x14,0x3D}, CAT_DRONE,  "Parrot",   'M'},
 };
 static const int OUI_SIGS_N = sizeof(OUI_SIGS)/sizeof(OUI_SIGS[0]);
 

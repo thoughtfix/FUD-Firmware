@@ -57,14 +57,17 @@ them. The idea generalizes to other hardware over time.
 Detailed in [POTENTIAL_IMPROVEMENTS.md](POTENTIAL_IMPROVEMENTS.md): Bluetooth
 Classic skimmers, ASTM F3411 Remote ID decode, the Flock BLE GATT signature,
 gated generic-ESP32 OUIs, Raven, the Pwnagotchi beacon, and the rotating-MAC
-persistence engine. Further out, ports to other devices (Cardputer, CYD, and
-friends) as the project generalizes.
+persistence engine. Further out, ports to more devices (CYD and friends) as the
+project generalizes. The Cardputer ADV is supported now, in the same image as
+the StickS3.
 
 ## Not on the roadmap, by design
 
 FUD stays a passive worn canary. No offensive or hostile transmit, no device
-mesh or social broadcast, no on-board storage or GPS or wardriving, no leveling
-or collectible gamification. These are choices, not gaps.
+mesh or social broadcast, no cloud or uploads, no leveling or collectible
+gamification. These are choices, not gaps. The Cardputer ADV's SD log and
+wardriving are the one exception to "no storage": local to the card, never
+sent, and wardriving is off until you turn it on.
 
 ## Helping out
 

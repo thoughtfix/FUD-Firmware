@@ -1,4 +1,6 @@
 .pio/
+.piohost/
 src/generated/
-work-log.txt
-backports-notes.md
+
+# Local only: work logs, plans, notes and prompts
+work-notes/

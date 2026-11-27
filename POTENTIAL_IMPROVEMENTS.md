@@ -67,6 +67,7 @@ Hikvision, Verkada, Avigilon, Axis, Axon). What remains:
 ## Deliberately out of scope
 
 Not gaps, choices. FUD stays a passive worn canary: no device-to-device social
-or mesh, no identity broadcast, no on-board storage or SD logging, no GPS or
-wardriving, no over-the-air / network-join updates, and no leveling or
-collectible gamification. The one sanctioned transmit is TV-B-Gone.
+or mesh, no identity broadcast, no cloud or uploads, no over-the-air /
+network-join updates, and no leveling or collectible gamification. The one
+sanctioned transmit is TV-B-Gone. (The Cardputer ADV's SD log, GPS, and opt-in
+wardriving stay on the card and are never sent.)
