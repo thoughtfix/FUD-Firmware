@@ -22,7 +22,7 @@ namespace telem {
 
 static const char* MODE_NAMES[] = {
   "idle","status","zoom","list","item","attack","waterfall","settings",
-  "toys","ssid","traffic","tvbg","finder","gps"
+  "toys","ssid","traffic","tvbg","finder","gps","help","wardrive"
 };
 
 static String g_line;
@@ -65,8 +65,9 @@ static void dumpState() {
   { char t[24]; clk::stamp(t, sizeof(t)); Serial.printf("[state] clock=%s %s\n", clk::sourceName(), t); }
   if (sdlog::avail) Serial.printf("[state] sdlog on=%d card=%d file=%s written=%lu queued=%d dropped=%lu\n", sdlog::on ? 1 : 0,
                                   sdlog::present() ? 1 : 0, sdlog::path, (unsigned long)sdlog::written, sdlog::queued(), (unsigned long)sdlog::dropped);
-  if (wd::avail) Serial.printf("[state] wardrive on=%d buf=%d file=%s written=%lu queued=%d dropped=%lu seen=%lu\n", wd::on ? 1 : 0,
-                               wd::buf ? 1 : 0, wd::path, (unsigned long)wd::written, wd::queued(), (unsigned long)wd::dropped, (unsigned long)wd::seenCount);
+  if (wd::avail) Serial.printf("[state] wardrive on=%d buf=%d file=%s wifi=%lu ble=%lu lastmin=%lu written=%lu queued=%d dropped=%lu seen=%lu\n", wd::on ? 1 : 0,
+                               wd::buf ? 1 : 0, wd::path, (unsigned long)wd::nWifi, (unsigned long)wd::nBle, (unsigned long)wd::lastMinute(),
+                               (unsigned long)wd::written, wd::queued(), (unsigned long)wd::dropped, (unsigned long)wd::seenCount);
   Serial.printf("[state] counts cam=%lu drn=%lu hak=%lu atk=%lu trk=%lu sub=%lu\n",
                 (unsigned long)cntCam, (unsigned long)cntDrn, (unsigned long)cntHak,
                 (unsigned long)cntAtk, (unsigned long)cntTrk, (unsigned long)cntSub);
@@ -178,6 +179,11 @@ static void poll() {
     else sdlog::tailPath = nullptr;
     int n = rest.toInt(); sdlog::tailReq = n > 0 ? n : 10;
     Serial.println("[telem] sdtail: prints after the next BLE phase"); }
+  else if (c == "sdrm") {   // bench: delete /fud files whose name starts with the prefix (sdrm wigle_20261127_)
+    static char pre[32]; snprintf(pre, sizeof pre, "%s", arg.c_str());
+    if (strlen(pre) < 6 || strchr(pre, '/')) { Serial.println("[telem] sdrm <name prefix, 6+ chars, no slash>"); }
+    else { sdlog::rmPrefix = pre; sdlog::lsReq = true; Serial.println("[telem] sdrm: deletes after the next BLE phase"); } }
+  else if (c == "sdls") { sdlog::lsReq = true; Serial.println("[telem] sdls: prints after the next BLE phase"); }
   else if (c == "ver" || c == "version") Serial.printf("[ver] FUD Firmware %s\n", FUD_VERSION);
   else if (c == "help" || c == "?") help();
 #ifdef FUD_BENCH
@@ -191,23 +197,24 @@ static void poll() {
     else if (al == "toys") { mode = MODE_TOYS; }
     else if (al == "log") { logFilter = -1; listSel = listTop = 0; mode = MODE_LIST; }
     else if (al == "gps") { mode = MODE_GPS; }
+    else if (al == "wardrive") { if (wd::avail) { mode = MODE_WARDRIVE; wdAsk = true; } }   // the warning first, like the menu
     else if (al == "waterfall") { openWaterfall(); }
     else if (al == "traffic") { mode = MODE_TRAFFIC; trafPeak = trafNow = 0; }
     else if (al == "ssid" || al == "tvbg" || al == "finder") {   // open by name, never by cursor position
       const char* want = al == "ssid" ? "SSID Scan" : al == "tvbg" ? "TV-B-Gone" : "Finder";
       for (int i = 0; i < TOYS_N; i++) if (!strcmp(TOYS_ITEMS[i], want)) { toysSel = i; mode = MODE_TOYS; actFrontHold(); }
     }
-    else { Serial.println("[telem] go home|status|zoom|settings|toys|log|gps|waterfall|traffic|ssid|tvbg|finder"); return; }
+    else { Serial.println("[telem] go home|status|zoom|settings|toys|log|gps|waterfall|traffic|ssid|tvbg|finder|wardrive"); return; }
     uiDirty = true; wake(INTERACT_TIMEOUT);
   }
   else if (c == "key") {  // bench: the same path as a real Cardputer key press
     String al = arg; al.toLowerCase();
     static const struct { const char* n; uint8_t k; } K[] = {{"up", KC_UP}, {"down", KC_DOWN}, {"left", KC_LEFT},
-      {"right", KC_RIGHT}, {"enter", KC_ENTER}, {"esc", KC_ESC}, {"q", KC_Q}, {"m", KC_M}, {"a", KC_A}, {"l", KC_L}};
+      {"right", KC_RIGHT}, {"enter", KC_ENTER}, {"esc", KC_ESC}, {"q", KC_Q}, {"m", KC_M}, {"a", KC_A}, {"l", KC_L}, {"h", KC_H}};
     bool ok = false;
     for (auto& e : K) if (al == e.n) { ok = true;   // same lock rules as keysPoll
       if (screenLock) { if (lockDebounced()) setLock(false); } else if (e.k == KC_L) setLock(true); else { wake(holdForMode()); keyAct(e.k); } }
-    if (!ok) { Serial.println("[telem] key up|down|left|right|enter|esc|q|m|a|l"); return; }
+    if (!ok) { Serial.println("[telem] key up|down|left|right|enter|esc|q|m|a|l|h"); return; }
   }
   else if (c == "anim") { String al = arg; al.toLowerCase(); homeAnimNow(al=="spin"?1:(al=="sweep"?2:0)); Serial.printf("[telem] anim %s\n", al.length()?al.c_str():"random"); }
 #endif

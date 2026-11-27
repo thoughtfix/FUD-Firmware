@@ -1,3 +1,4 @@
+#include <algorithm>
 // FUD firmware - Find Unwelcome Devices. Passive surveillance-awareness canary.
 // Copyright (C) 2026 thoughtfix. Licensed under the GNU General Public License
 // v3.0 (see LICENSE). Contains a subset of SquachWatch-CYD's GPL-3.0 signature
@@ -25,7 +26,7 @@ static const Board* B=&BOARD_STICKS3;
 // nullptr on a board without a known IR pin: TV-B-Gone then sends nothing.
 IRsend* irTx=nullptr;
 
-#define FUD_VERSION "v0.50b"
+#define FUD_VERSION "v0.60b"
 #include "facevec.h"   // vector Zuse, backported from FUD-Deck (thoughtfix, GPL-3.0)
 
 static const uint16_t AMBER  = 0xFFE0;
@@ -72,7 +73,7 @@ bool muted=false;   // MUTE: ignore everything (silent + calm), keep logging
 // Saved in NVS. Settings > Silent; turning it OFF shows the warning screen first (setWarn=1).
 // Only Wi-Fi uses it today: BLE scanning stays passive either way.
 bool silentMode=true;
-int setWarn=0;   // Settings warning screen up: 1 = Silent OFF?, 2 = Wardrive ON?
+int setWarn=0;   // Settings warning screen up: 1 = Silent OFF?
 static int wifiScan(){ return silentMode ? WiFi.scanNetworks(false,true,true,120)   // passive: beacons only
                                          : WiFi.scanNetworks(false,true); }        // active: probe requests
 
@@ -80,8 +81,15 @@ struct Evt { uint8_t key[6]; Cat cat; char label[16]; char name[32]; int8_t rssi
 QueueHandle_t evtQ;
 
 enum Mode { MODE_IDLE, MODE_STATUS, MODE_ZOOM, MODE_LIST, MODE_ITEM, MODE_ATTACK, MODE_WATERFALL, MODE_SETTINGS,
-            MODE_TOYS, MODE_SSID, MODE_TRAFFIC, MODE_TVBG, MODE_FINDER, MODE_GPS };
+            MODE_TOYS, MODE_SSID, MODE_TRAFFIC, MODE_TVBG, MODE_FINDER, MODE_GPS, MODE_HELP, MODE_WARDRIVE };
+static bool wdAsk=false;   // Wardrive: the privacy warning is up (Enter starts, Esc cancels)
+// Wardrive: notable detections this session, for the screen (CAM, ALPR, DRN, HAK, TRK)
+static volatile uint16_t wdNeat[5]={0};
+static Mode helpPrev=MODE_IDLE;   // where Help returns to
+
 Mode mode=MODE_IDLE;
+// Wardriving is on exactly while its screen (or Help over it) is open, past the warning.
+static bool wardriving(){ return (mode==MODE_WARDRIVE || (mode==MODE_HELP && helpPrev==MODE_WARDRIVE)) && !wdAsk; }
 // Radio toys run from the UI loop and use the radios directly (Wi-Fi scan, CC1101/nRF24 on SPI).
 static bool toyMode(){ return mode==MODE_WATERFALL||mode==MODE_SSID||mode==MODE_TRAFFIC; }
 // One owner at a time for Wi-Fi scanning and the SPI bus (radios + SD). Two Wi-Fi scans at once
@@ -89,6 +97,7 @@ static bool toyMode(){ return mode==MODE_WATERFALL||mode==MODE_SSID||mode==MODE_
 // task takes it per phase and rechecks toyMode() inside; the UI only tries (never blocks) and
 // skips a frame when it is busy.
 static SemaphoreHandle_t radioMtx=nullptr;
+static volatile bool bleScanning=false;   // the scan task is inside its BLE scan (holding the lock)
 struct RadioLock { bool ok; explicit RadioLock(TickType_t w){ ok=radioMtx&&xSemaphoreTake(radioMtx,w)==pdTRUE; } ~RadioLock(){ if(ok) xSemaphoreGive(radioMtx); } };
 const char* dispFace=nullptr; uint32_t dispUntil=0;   // transient face for log-tier hits
 int  listSel=0,listTop=0,itemAct=0,curDet=-1,attackShow=-1;
@@ -139,7 +148,13 @@ uint8_t userBright=BRIGHT_NORMAL;   // runtime brightness (saved as NVS "bright"
 static const uint8_t VOL_PCT[]  ={150,120,100,65,35,0};
 static const char*   VOL_NAMES[]={"MAX","LOUD","MED","LOW","MIN","MUTE"};
 static const int VOL_N=6; int volIdx=2;   // default MED
-static uint8_t applyVol(uint16_t base){ uint16_t v=(uint16_t)(base*VOL_PCT[volIdx]/100); return v>255?255:(uint8_t)v; }
+static uint8_t applyVol(uint16_t base){
+#ifdef FUD_DEV_MUTE
+  (void)base; return 0;   // bench builds: no sound at all, not even key beeps (mute only stops alerts)
+#else
+  uint16_t v=(uint16_t)(base*VOL_PCT[volIdx]/100); return v>255?255:(uint8_t)v;
+#endif
+}
 
 // alert filter: minimum signature confidence that may take over the screen /
 // make sound. Below it, still counted and logged, just quiet. 0=all.
@@ -228,7 +243,7 @@ static const uint32_t LOCK_DEBOUNCE=800, LOCK_MSG_MS=1500;
 static bool lockDebounced(){ return millis()-lockAt>=LOCK_DEBOUNCE; }   // presses this soon after locking are ignored
 static void setLock(bool on){
   screenLock=on;
-  if(on){ tvbgFiring=false; finderLocked=false; goHome(); M5.Speaker.tone(700,60);   // from any screen
+  if(on){ tvbgFiring=false; finderLocked=false; if(mode!=MODE_WARDRIVE) goHome(); M5.Speaker.tone(700,60);   // from any screen; Wardrive keeps running
     lockAt=millis(); lockMsgUntil=lockAt+LOCK_MSG_MS; wake(LOCK_MSG_MS+1000); drawLockMsg(); }
   else { lockMsgUntil=0; M5.Speaker.tone(1500,60); wake(SCREEN_TIMEOUT); uiDirty=true; }
 }
@@ -294,6 +309,10 @@ static void ingest(const Evt& e){
   if(d->ignored) return;
   if(fresh){
     lastDetection=now; sdlog::note(*d);
+    if(wardriving()){ int k=-1;
+      if(e.cat==CAT_CAMERA) k=(!strcmp(e.label,"Flock")||!strcmp(e.label,"Raven"))?1:0;
+      else if(e.cat==CAT_DRONE) k=2; else if(e.cat==CAT_HACKDEV) k=3; else if(e.cat==CAT_TRACKER) k=4;
+      if(k>=0) wdNeat[k]++; }
     if(e.cat==CAT_ATTACK) cntAtk++; else if(e.cat==CAT_CAMERA) cntCam++;
     else if(e.cat==CAT_HACKDEV) cntHak++; else if(e.cat==CAT_TRACKER) cntTrk++;
     else if(e.cat==CAT_DRONE) cntDrn++; else if(e.cat==CAT_SUBGHZ) cntSub++;
@@ -393,6 +412,12 @@ static bool bleMatch(const NimBLEAdvertisedDevice* dev, BleHit& h){
   }
   return false;
 }
+namespace wd { static void captureBle(const uint8_t* mac,const char* name,int8_t rssi,int mfgr); }
+// Wardrive: every advertiser, matched or not (name and manufacturer ID when present).
+static void wdBle(const NimBLEAdvertisedDevice* dev){
+  std::string m=dev->getManufacturerData(); int mf=m.size()>=2?((uint8_t)m[0]|((uint8_t)m[1]<<8)):-1;
+  wd::captureBle(dev->getAddress().getBase()->val,dev->getName().c_str(),dev->getRSSI(),mf);
+}
 static void classifyBle(const NimBLEAdvertisedDevice* dev){
   BleHit h; if(!bleMatch(dev,h)) return;
   uint8_t key[6]; memcpy(key,dev->getAddress().getBase()->val,6);
@@ -491,12 +516,12 @@ static void promiscCb(void* buf, wifi_promiscuous_pkt_type_t type){
     g_reason=(uint16_t)f[24] | ((uint16_t)f[25]<<8); // reason code after 24-byte hdr
   }
 }
-static void wifiMonitorDeauth(){
+static void wifiMonitorDeauth(uint32_t dwellMs=900){
   g_deauth=0; g_disassoc=0; g_bcast=0; g_reason=0; g_pwnSeen=false; g_ridSeen=false;
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_promiscuous_rx_cb(&promiscCb);
   static const uint8_t chans[]={1,6,11,1,6,11};
-  for(uint8_t c:chans){ if(toyMode()) break; esp_wifi_set_channel(c,WIFI_SECOND_CHAN_NONE); vTaskDelay(pdMS_TO_TICKS(900)); }   // a toy wants the radio: stop early
+  for(uint8_t c:chans){ if(toyMode()) break; esp_wifi_set_channel(c,WIFI_SECOND_CHAN_NONE); vTaskDelay(pdMS_TO_TICKS(dwellMs)); }   // a toy wants the radio: stop early
   esp_wifi_set_promiscuous(false);
   if(g_pwnSeen){ uint8_t k[6]; memcpy(k,g_pwnSrc,6); enq(k,CAT_HACKDEV,"Pwnagotchi",g_pwnName[0]?g_pwnName:"pwnagotchi",g_pwnRssi,false,true,'H'); }
   if(g_ridSeen){ uint8_t k[6]; memcpy(k,g_ridSrc,6); enq(k,CAT_DRONE,"RemoteID","Wi-Fi beacon",g_ridRssi,false,false,'M'); }
@@ -617,7 +642,7 @@ static void nrfSweepWF(){
 }
 // Sub-GHz waterfall: sweep 415-450 MHz (the 433 band the antenna is tuned for)
 // in 120 steps, reading true RSSI at each. Antenna is 433, so this window is
-// where it is honest. RSSI -110..-30 dBm mapped to 0..8 intensity.
+// where it is honest. RSSI above the noise floor mapped to 0..8 intensity.
 static const uint32_t WF_SUB_LO=415000000UL, WF_SUB_HI=450000000UL;
 // Waterfall sources: 0 = 2.4 GHz (nRF24), 1 = 433 window, 2 = 915 window (902-928 MHz ISM, the US
 // band; the Hydra RF 924 is tuned for it). 915 is offered on the Cardputer only for now: the
@@ -631,6 +656,7 @@ static void ccSweepWF(){
   ccStrobe(0x30); delay(1);                         // SRES
   ccWrite(0x10,0x07); ccWrite(0x12,0x30); ccWrite(0x0B,0x06); ccWrite(0x18,0x18); // wide BW, OOK, FS_AUTOCAL idle->RX
   uint32_t lo=wfLo(), span=wfHi()-lo;
+  static int16_t raw[WFCOLS];
   for(int i=0;i<WFCOLS;i++){
     uint32_t f=lo+(uint32_t)((uint64_t)span*i/WFCOLS);
     uint32_t rv=(uint32_t)(((uint64_t)f<<16)/26000000ULL);
@@ -638,10 +664,15 @@ static void ccSweepWF(){
     ccWrite(0x0D,(rv>>16)&0xFF); ccWrite(0x0E,(rv>>8)&0xFF); ccWrite(0x0F,rv&0xFF);
     ccStrobe(0x34); delayMicroseconds(1200);        // SRX (autocal ~720us) + RSSI settle
     int r=ccRssiDbm(); delayMicroseconds(300); int r2=ccRssiDbm(); if(r2>r) r=r2; // take the stronger
-    int v=(r+100)/9; if(v<0)v=0; if(v>8)v=8;        // -100..-30 dBm -> 0..8
-    wfrow[i]=v;
+    raw[i]=r;
   }
   ccStrobe(0x36);
+  // Levels above the noise floor (the row's quietest fifth), 5 dB a step, like an SDR on auto.
+  {
+    int16_t t[WFCOLS]; memcpy(t,raw,sizeof t); std::nth_element(t,t+WFCOLS/5,t+WFCOLS);
+    static int fl=-95; fl=(fl*3+t[WFCOLS/5])/4;      // smoothed so the floor does not flicker
+    for(int i=0;i<WFCOLS;i++){ int v=(raw[i]-fl-2)/5; wfrow[i]=v<0?0:(v>8?8:v); }
+  }
   rfspi.endTransaction();
 }
 // 2.4 GHz busyness for the traffic graph: one carrier-detect sample on every
@@ -664,9 +695,31 @@ static void scanTask(void*){
   // by the service UUIDs in their advertisements; names that only arrive in scan responses are
   // not seen. Duty ~50% (window 80 of interval 160).
   NimBLEScan* s=NimBLEDevice::getScan(); s->setActiveScan(false); s->setInterval(160); s->setWindow(80);
+  bool bleUp=true; uint32_t wdCycle=0;
   for(;;){
-    // Pause background scanning while a radio-toy owns the radios/screen.
-    if(toyMode()){ vTaskDelay(pdMS_TO_TICKS(150)); continue; }
+    // Pause background scanning while a radio-toy owns the radios/screen. Without PSRAM, the
+    // idle Bluetooth stack's 63 KB goes back too during Waterfall and Traffic (SPI radios only).
+    if(toyMode()){
+      if(bleUp && !ESP.getPsramSize() && (mode==MODE_WATERFALL||mode==MODE_TRAFFIC)){ NimBLEDevice::deinit(true); bleUp=false; }
+      vTaskDelay(pdMS_TO_TICKS(150)); continue; }
+    if(!bleUp){ NimBLEDevice::init(""); s=NimBLEDevice::getScan(); s->setActiveScan(false); s->setInterval(160); s->setWindow(80); bleUp=true; }
+    // Wardrive: short Bluetooth and Wi-Fi scans back to back, every device logged with its GPS
+    // position, the card written between them. No sub-GHz or nRF24 (nothing to map), and the
+    // deauth / Remote ID / Pwnagotchi listen runs short, every fourth round. ~4.5 s a round.
+    if(wd::on){
+      { RadioLock L(portMAX_DELAY); if(!wd::on) continue; activeRadio='B'; WiFi.mode(WIFI_OFF);
+        bleScanning=true; NimBLEScanResults r=s->getResults(2500,false); bleScanning=false;
+        for(int i=0;i<r.getCount();i++){ const NimBLEAdvertisedDevice* d=r.getDevice(i); classifyBle(d); wdBle(d); }
+        s->clearResults();
+        sdlog::service(); wd::service(); }
+      { RadioLock L(portMAX_DELAY);
+        if(wd::on){ activeRadio='W'; WiFi.mode(WIFI_STA); WiFi.disconnect(); esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+          scanWifiOnce();
+          if(++wdCycle%4==0) wifiMonitorDeauth(300);
+          WiFi.mode(WIFI_OFF); }
+        wd::service(); }                                   // Wi-Fi off again: write this round's networks
+      activeRadio='-'; vTaskDelay(pdMS_TO_TICKS(50)); continue;
+    }
     // Finder (locked): fast repeated short scans watching for the ONE chosen
     // MAC, publish its live RSSI for the UI. Stays on this thread so NimBLE is
     // only ever driven from one place. While the picklist is up (unlocked) the
@@ -681,10 +734,12 @@ static void scanTask(void*){
       s->clearResults(); uiDirty=true; continue;
     }
     // PHASE 1: BLE (~6 s). WiFi radio OFF so only one 2.4 radio is live.
-    { RadioLock L(portMAX_DELAY); if(toyMode()) continue; activeRadio='B'; WiFi.mode(WIFI_OFF); }
-    NimBLEScanResults r=s->getResults(6000,false);
-    for(int i=0;i<r.getCount();i++) classifyBle(r.getDevice(i));
-    s->clearResults();
+    // Held for the whole scan: a toy that turned Wi-Fi on now would stack Wi-Fi's buffers on the
+    // scan's (23 KB free on the Cardputer). A toy opening stops the scan early (see loop).
+    { RadioLock L(portMAX_DELAY); if(toyMode()) continue; activeRadio='B'; WiFi.mode(WIFI_OFF);
+      bleScanning=true; NimBLEScanResults r=s->getResults(6000,false); bleScanning=false;
+      for(int i=0;i<r.getCount();i++) classifyBle(r.getDevice(i));
+      s->clearResults(); }
     { RadioLock L(portMAX_DELAY); if(!toyMode()){ sdlog::service(); wd::service(); } }   // SD writes: Wi-Fi off (heap high), bus ours
     // PHASE 2/3: WiFi on for the scan + deauth monitor, then off again.
     { RadioLock L(portMAX_DELAY);
@@ -786,12 +841,12 @@ static void drawDetail(Det& d){
 // ---- menus / categories ----
 static const char* STATUS_ITEMS[]={"Log","Toys","Settings","Clear cache"};
 static const int STATUS_N=4;
-static const char* TOYS_ITEMS[]={"Waterfall","SSID Scan","Traffic","TV-B-Gone","Finder","GPS"};
-static int TOYS_N=5;   // 6 (adds GPS) on boards with a Grove GPS port, set in setup()
+static const char* TOYS_ITEMS[]={"Waterfall","SSID Scan","Traffic","TV-B-Gone","Finder","GPS","Wardrive"};
+static int TOYS_N=5;   // 6 (adds GPS) with a Grove GPS port, 7 (adds Wardrive) with GPS and an SD slot; set in setup()
 // Settings rows, looked up by name. "SD Log" only on boards with a card slot (built in setup).
-static const char* SET_ALL[]={"Brightness","Shake","Volume","Alert Filt","Silent","SD Log","Wardrive","End of Line"};
+static const char* SET_ALL[]={"Brightness","Shake","Volume","Alert Filt","Silent","SD Log","End of Line"};
 static const int SET_MAX=8; static const char* SET_ITEMS[SET_MAX]; static int SET_N=0;
-static void setRowsBuild(){ SET_N=0; for(const char* r:SET_ALL){ if(!strcmp(r,"SD Log")&&!sdlog::avail) continue; if(!strcmp(r,"Wardrive")&&!wd::avail) continue; SET_ITEMS[SET_N++]=r; } }
+static void setRowsBuild(){ SET_N=0; for(const char* r:SET_ALL){ if(!strcmp(r,"SD Log")&&!sdlog::avail) continue; SET_ITEMS[SET_N++]=r; } }
 static bool setIs(int i,const char* n){ return i>=0&&i<SET_N&&!strcmp(SET_ITEMS[i],n); }
 static void setLabel(int i,char* b,size_t n){
   if(setIs(i,"Brightness")) snprintf(b,n,"Bright:%s",BRIGHT_NAMES[brightIdx]);
@@ -799,7 +854,6 @@ static void setLabel(int i,char* b,size_t n){
   else if(setIs(i,"Volume")) snprintf(b,n,"Vol:%s",VOL_NAMES[volIdx]);
   else if(setIs(i,"Alert Filt")) snprintf(b,n,"Alert:%s",AF_NAMES[alertMinConf]);
   else if(setIs(i,"Silent")) snprintf(b,n,"Silent:%s",silentMode?"ON":"OFF");
-  else if(setIs(i,"Wardrive")) snprintf(b,n,"Wardrive:%s",wd::on?"ON":"OFF");
   else if(setIs(i,"SD Log")) snprintf(b,n,"SD Log:%s",!sdlog::on?"OFF":sdlog::present()?"ON":"NO CARD");
   else snprintf(b,n,"%s",SET_ITEMS[i]);
 }
@@ -929,10 +983,11 @@ static void drawAttack(){
   if(attackShow>=0&&dets[attackShow].used) drawDetail(dets[attackShow]);
   M5.Display.setTextColor(AMBER,BG); M5.Display.setTextSize(1); M5.Display.drawString("acked. hold=zoom BACK=home",8,104);
 }
-// Spectrum-analyzer palette: black -> blue -> cyan -> green -> yellow -> red -> white.
+// Waterfall palette, the usual SDR look: navy = no signal, then blue, green, yellow and red as it
+// gets stronger (9 steps, chosen to survive the Cardputer's 8-bit sprite).
 static uint16_t wfHeat(int v){
-  static const uint16_t pal[8]={0x0007,0x001F,0x05FF,0x07FF,0x07E0,0xFFE0,0xFC00,0xFFFF};
-  if(v<=0) return 0x0000; int t=v; if(t<1)t=1; if(t>8)t=8; return pal[t-1];
+  static const uint16_t pal[9]={0x000A,0x0015,0x025F,0x0495,0x06E0,0x97E0,0xFFE0,0xFC80,0xF800};
+  if(v<0) v=0; if(v>8) v=8; return pal[v];
 }
 // Waterfall and traffic share one sprite. 16-bit with PSRAM, 8-bit without (27 KB instead of 54).
 // Fixed-landscape boards: FUD-Boy style header, channel ticks under it, a shorter sprite below.
@@ -943,7 +998,7 @@ static int wfH(){ return landOnly()?104:112; }
 static bool wfMayAlloc=false, wfTried=false;
 static void wfEnsure(){ if(wfReady) return; bool ps=ESP.getPsramSize()>0; if(!ps&&!wfMayAlloc) return; wfTried=true;
   wfc.setColorDepth(ps?16:8); wfc.setPsram(ps); wfReady=wfc.createSprite(240,wfH());
-  if(wfReady) wfc.fillScreen(0); else Serial.printf("[wf] sprite failed, heap %u max %u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getMaxAllocHeap()); }
+  if(wfReady) wfc.fillScreen(wfHeat(0)); else Serial.printf("[wf] sprite failed, heap %u max %u\n",(unsigned)ESP.getFreeHeap(),(unsigned)ESP.getMaxAllocHeap()); }
 template<class G> static void toyHeaderL(G& g,const char* title,const char* val){
   g.fillRect(0,0,240,HDR_L,BG); g.setTextSize(1);
   g.setFont(&fonts::FreeSansBold9pt7b); g.setTextColor(AMBER,BG); g.setTextDatum(middle_left); g.drawString(title,3,HDR_L/2);
@@ -951,7 +1006,8 @@ template<class G> static void toyHeaderL(G& g,const char* title,const char* val)
   g.setFont(&fonts::Font0); g.setTextDatum(top_left); g.drawFastHLine(0,HDR_L-1,240,DIM_L);
 }
 extern bool lastFramePcL;
-static void wfInit(){ lastFramePcL=false;   // drawn on the panel, not pcL (shot must read the panel)
+static float wfOcc[WFCOLS];   // 2.4 GHz: per-channel busy share (0..1)
+static void wfInit(){ lastFramePcL=false; memset(wfOcc,0,sizeof(float)*WFCOLS);   // drawn on the panel, not pcL (shot must read the panel)
   if(landOnly()){
     M5.Display.setRotation(ROT_LANDSCAPE); M5.Display.fillScreen(BG); wfEnsure();
     toyHeaderL(M5.Display,wfSource==0?"2.4 GHz":(wfSource==2?"915 MHz":"433 MHz"),"");
@@ -976,7 +1032,10 @@ static void wfRender(){
   if(!wfReady){ M5.Display.setTextColor(AMBER,BG); M5.Display.drawString("no sprite memory",4,60); return; }
   wfc.scroll(0,1);
   int peakI=-1,peakV=0;
-  for(int i=0;i<WFCOLS;i++){ int v=wfrow[i]; uint16_t c=wfHeat(v); for(int x=0;x<WFCW;x++) wfc.drawPixel(i*WFCW+x,0,c); if(v>peakV){peakV=v;peakI=i;} }
+  for(int i=0;i<WFCOLS;i++){ int v=wfrow[i];
+    if(wfSource==0){ int h=v?v-2:0;   // nRF hits 0..4: busy share of recent samples, ~3-row average
+      wfOcc[i]=wfOcc[i]*0.7f+h*0.075f; v=(int)(wfOcc[i]*8.0f+0.5f); }   // red = busy nearly every sample
+    uint16_t c=wfHeat(v); for(int x=0;x<WFCW;x++) wfc.drawPixel(i*WFCW+x,0,c); if(v>peakV){peakV=v;peakI=i;} }
   wfc.pushSprite(0,wfY());
   char b[20];
   if(peakI<0) snprintf(b,sizeof(b),"quiet");
@@ -985,7 +1044,7 @@ static void wfRender(){
   if(landOnly()){ M5.Display.setFont(&fonts::Font2); M5.Display.setTextColor(AMBER,BG); M5.Display.setTextDatum(middle_right);
     M5.Display.setTextPadding(110); M5.Display.drawString(b,237,HDR_L/2); M5.Display.setTextPadding(0);
     M5.Display.setFont(&fonts::Font0); M5.Display.setTextDatum(top_left); return; }
-  M5.Display.fillRect(150,2,90,10,BG); M5.Display.setTextColor(AMBER,BG); M5.Display.setTextSize(1);
+  M5.Display.fillRect(172,2,68,10,BG); M5.Display.setTextColor(AMBER,BG); M5.Display.setTextSize(1);   // right of "BACK=out"
   M5.Display.setTextDatum(top_right); M5.Display.drawString(b,238,2); M5.Display.setTextDatum(top_left);
 }
 static void drawToys(){
@@ -1031,9 +1090,13 @@ int homeSel=0;                               // selected Home tile (keys move it
 template<class G> static void headerL(G& g,const char* title,uint16_t tc=AMBER){
   g.fillRect(0,0,240,HDR_L,BG);
   g.setTextSize(1); g.setFont(&fonts::FreeSansBold9pt7b); g.setTextColor(tc,BG); g.setTextDatum(middle_left);
-  g.drawString(title,3,HDR_L/2);
   battGlyph(g,216,3,M5.Power.getBatteryLevel(),M5.Power.isCharging());
   char r[28]; snprintf(r,sizeof(r),"%s%s%s%s%c",screenLock?"LOCK  ":"",silentMode?"":"TX  ",wd::on?"WD  ":"",muted?"MUTE  ":"",(char)activeRadio);   // TX = Silent OFF, WD = wardriving
+  // Title: if it would run into the markers, drop its tail after a double space ("STATUS  v0.60b").
+  g.setFont(&fonts::Font2); int room=210-g.textWidth(r)-8; g.setFont(&fonts::FreeSansBold9pt7b);
+  char t[32]; snprintf(t,sizeof(t),"%s",title);
+  if(g.textWidth(t)+3>room){ char* sp=strstr(t,"  "); if(sp) *sp=0; }
+  g.drawString(t,3,HDR_L/2);
   g.setFont(&fonts::Font2); g.setTextColor((muted||!silentMode)?LK_RED:DIM_L,BG); g.setTextDatum(middle_right); g.drawString(r,210,HDR_L/2);
   g.setFont(&fonts::Font0); g.setTextDatum(top_left);
   g.drawFastHLine(0,HDR_L-1,240,DIM_L);
@@ -1341,15 +1404,55 @@ static void hintL(const char* t){
   auto& g=pcL; g.setFont(&fonts::Font2); g.setTextColor(DIM_L,BG); g.setTextDatum(bottom_left);
   g.drawString(t,4,134); g.setFont(&fonts::Font0); g.setTextDatum(top_left);
 }
-// The warning before Silent goes OFF (Settings > Silent, Enter).
+// Help (H on the Cardputer): every hotkey on one screen. Any key closes it.
+static void drawHelpL(){
+  if(!pcLBegin("KEYS")) return;
+  auto& g=pcL; g.setTextDatum(top_left);
+  static const char* K[][2]={{"arrows","move"},{"Enter","select"},{"Esc","back"},{"Q","home"},
+                             {"M","mute"},{"A","ack"},{"L","lock"},{"H","help"}};
+  for(int i=0;i<8;i++){ int x=(i%2)?124:4, y=HDR_L+6+(i/2)*24;
+    g.setFont(&fonts::FreeSansBold9pt7b); g.setTextColor(AMBER,BG); g.drawString(K[i][0],x,y);
+    g.setFont(&fonts::Font2); g.drawString(K[i][1],x+68,y+1); }
+  g.setFont(&fonts::Font0);
+  hintL("any key closes");
+  g.pushSprite(0,0);
+}
+// The warning before Silent goes OFF (Settings > Silent, Enter), or before Wardrive starts.
 static void drawSilentWarnL(){
-  bool w=setWarn==2;   // 2 = Wardrive ON? (same screen shape)
+  bool w=(mode==MODE_WARDRIVE);   // Wardrive's privacy warning has the same shape
   if(!pcLBegin(w?"WARDRIVE ON?":"SILENT OFF?",LK_RED)) return;
   auto& g=pcL; g.setFont(&fonts::Font2); g.setTextColor(AMBER,BG); g.setTextDatum(top_left);
   static const char* W[]={"Wi-Fi scans will send probe requests.","Nearby receivers can log this device","being here, and where.","Bluetooth stays listen-only."};
-  static const char* D[]={"Saves each Wi-Fi network heard,","with GPS position, to the SD card.","The file shows where you went.","Nothing is uploaded or sent."};
+  static const char* D[]={"Saves every Wi-Fi network and","Bluetooth device heard, with its","GPS position, to the SD card.","It shows where you went. Never sent."};
   for(int i=0;i<4;i++) g.drawString((w?D:W)[i],4,HDR_L+6+i*18);
-  hintL(w?"Enter = turn on    Esc = keep off":"Enter = turn off    Esc = keep silent");
+  hintL(w?"Enter = start    Esc = cancel":"Enter = turn off    Esc = keep silent");
+  g.pushSprite(0,0);
+}
+// Wardrive (Toys > Wardrive): the privacy warning, then the live count. Refreshed every second.
+static void drawWardriveL(){
+  if(wdAsk){ drawSilentWarnL(); return; }
+  if(!pcLBegin("WARDRIVE")) return;
+  auto& g=pcL; g.setTextDatum(top_left); char b[48];
+  g.setFont(&fonts::FreeSansBold9pt7b);
+  if(!gps::fixed()){ g.setTextColor(LK_RED,BG); g.drawString("No GPS fix. Not saving.",4,HDR_L+3); }
+  else if(!clk::trusted()){ g.setTextColor(LK_RED,BG); g.drawString("GPS clock not set yet",4,HDR_L+3); }
+  else { g.setTextColor(AMBER,BG); snprintf(b,sizeof b,"GPS fix   %d sat   saving",gps::S.sats); g.drawString(b,4,HDR_L+3); }
+  g.setFont(&fonts::Font0); g.setTextSize(2); g.setTextColor(AMBER,BG);
+  snprintf(b,sizeof b,"WiFi %lu  BLE %lu",(unsigned long)wd::nWifi,(unsigned long)wd::nBle); g.drawString(b,4,HDR_L+26);
+  g.setTextSize(1); g.setFont(&fonts::Font2);
+  uint32_t el=(millis()-wd::startMs)/1000;
+  if(el<3600) snprintf(b,sizeof b,"+%lu in the last minute    %02lu:%02lu",(unsigned long)wd::lastMinute(),(unsigned long)(el/60),(unsigned long)(el%60));
+  else snprintf(b,sizeof b,"+%lu in the last minute    %lu:%02lu h",(unsigned long)wd::lastMinute(),(unsigned long)(el/3600),(unsigned long)(el/60%60));
+  g.drawString(b,4,HDR_L+48);
+  int ai=alarmActive()?activeAttackIdx():-1;
+  if(ai>=0){ g.setTextColor(LK_RED,BG); snprintf(b,sizeof b,"ALERT %s   A = ack",dets[ai].name[0]?dets[ai].name:dets[ai].label); }
+  else snprintf(b,sizeof b,"CAM %u  ALPR %u  DRN %u  HAK %u  TRK %u",wdNeat[0],wdNeat[1],wdNeat[2],wdNeat[3],wdNeat[4]);
+  g.drawString(b,4,HDR_L+66);
+  g.setTextColor(DIM_L,BG);
+  if(wd::lastName[0]){ snprintf(b,sizeof b,"last: %s",wd::lastName); fitString(g,b,4,HDR_L+84,232); }
+  else if(wd::path[0]) g.drawString(wd::path+5,4,HDR_L+84);
+  g.setFont(&fonts::Font0);
+  hintL("Esc = stop    L = lock    H = keys");
   g.pushSprite(0,0);
 }
 // Name in 12pt, then up to three Font2 lines: what it is, its id, signal and age.
@@ -1462,7 +1565,7 @@ static void redraw(){ lastFramePcL=false; switch(mode){
     case MODE_SETTINGS:drawSettings();break; case MODE_LIST:drawList();break; case MODE_ITEM:drawItem();break;
     case MODE_ATTACK:drawAttack();break; case MODE_WATERFALL:wfInit();break; case MODE_TOYS:drawToys();break;
     case MODE_SSID:drawSsid();break; case MODE_TRAFFIC:trafInit();break; case MODE_TVBG:drawTvbg();break;
-    case MODE_FINDER:drawFinder();break; case MODE_GPS:drawGps();break; } uiDirty=false; }
+    case MODE_FINDER:drawFinder();break; case MODE_GPS:drawGps();break; case MODE_HELP:drawHelpL();break; case MODE_WARDRIVE:drawWardriveL();break; } uiDirty=false; }
 
 // ---- Home idle wheel/radar (vector only, same idea as FUD-Deck) ----
 // Now and then on a calm Home, Zuse's features spin one eased turn inside the rim, or a radar
@@ -1541,6 +1644,7 @@ static void actSideShort(){ M5.Speaker.tone(900,45);
         case MODE_WATERFALL: case MODE_SSID: case MODE_TRAFFIC: case MODE_TVBG: tvbgFiring=false; mode=MODE_TOYS; break;
         case MODE_FINDER: if(finderLocked) finderLocked=false; else mode=MODE_TOYS; break;  // back: unlock to list, then out
         case MODE_GPS:      mode=MODE_TOYS; break;
+        case MODE_WARDRIVE: wdAsk=false; mode=MODE_TOYS; break;   // stop (or cancel the warning); the file is flushed
         default:            goHome(); break;   // STATUS, ZOOM, ATTACK -> home
       }
   uiDirty=true;
@@ -1554,12 +1658,14 @@ static void actFrontHold(){ int idxs[MAXDET],n; M5.Speaker.tone(1600,45);
         else if(!strcmp(it,"Toys")){ mode=MODE_TOYS; toysSel=0; }
         else if(!strcmp(it,"Settings")){ mode=MODE_SETTINGS; setSel=0; setWarn=0; }
         else if(!strcmp(it,"Clear cache")){ flushCaches(); } break; }
+      case MODE_WARDRIVE: if(wdAsk){ wdAsk=false; toast("WARDRIVING"); } break;   // Enter on the warning starts it
       case MODE_TOYS: { const char* t=TOYS_ITEMS[toysSel];
         if(!strcmp(t,"Waterfall")) openWaterfall();
         else if(!strcmp(t,"SSID Scan")){ mode=MODE_SSID; ssidSel=ssidTop=0; ssidN=0; ssidLast=0; }
         else if(!strcmp(t,"Traffic")){ mode=MODE_TRAFFIC; trafPeak=trafNow=0; }
         else if(!strcmp(t,"TV-B-Gone")){ mode=MODE_TVBG; tvbgFiring=false; tvbgIdx=0; }
         else if(!strcmp(t,"GPS")){ mode=MODE_GPS; }
+        else if(!strcmp(t,"Wardrive")){ mode=MODE_WARDRIVE; wdAsk=true; for(auto& k:wdNeat) k=0; }
         else if(!strcmp(t,"Finder")){ mode=MODE_FINDER; finderLocked=false; finderSel=finderTop=0; finderHas=false; finderSmooth=finderBaseline=-100; } break; }
       case MODE_FINDER: if(!finderLocked){ int fi[MAXDET],fn=finderList(fi,MAXDET);
           if(fn) lockFinder(dets[fi[finderSel<fn?finderSel:0]]); } break;
@@ -1575,10 +1681,8 @@ static void actFrontHold(){ int idxs[MAXDET],n; M5.Speaker.tone(1600,45);
       case MODE_ATTACK: textZoom=!textZoom; break;        // detail zoom toggle
       case MODE_SETTINGS:
         if(setWarn==1) setSilent(false);                                // confirmed on the warning screen
-        else if(setWarn==2){ wd::setOn(true); setWarn=0; toast("WARDRIVE ON"); }
         else if(setIs(setSel,"Brightness")) cycleBright(); else if(setIs(setSel,"Shake")) cycleShake(); else if(setIs(setSel,"Volume")) cycleVol(); else if(setIs(setSel,"Alert Filt")) cycleAlertFilt();
         else if(setIs(setSel,"Silent")){ if(silentMode) setWarn=1; else setSilent(true); }   // OFF warns first, ON is instant
-        else if(setIs(setSel,"Wardrive")){ if(!wd::on) setWarn=2; else { wd::setOn(false); toast("WARDRIVE OFF"); } }   // ON warns first
         else if(setIs(setSel,"SD Log")){ sdlog::setOn(!sdlog::on); toast(sdlog::on?"SD LOG ON":"SD LOG OFF"); }
         else { if(g_songOn) stopSong(); else playSong(); } break;
       default: break;
@@ -1600,7 +1704,7 @@ static void actFrontShort(){ int idxs[MAXDET],n; M5.Speaker.tone(1300,35);
         case MODE_LIST: { logIdxs(n,idxs); if(n) listSel=(listSel+1)%n; break; }
         case MODE_ITEM: { int na=(curDet>=0&&isTrackable(dets[curDet]))?4:3; itemAct=(itemAct+1)%na; break; }
         case MODE_ATTACK: if(textZoom) textZoom=false; else goHome(); break;
-        case MODE_WATERFALL: do{ wfSource=(wfSource+1)%3; }while((wfSource==0&&!nrfPresent)||(wfSource==1&&!ccPresent)||(wfSource==2&&!wfHas915())); if(wfReady)wfc.fillScreen(0); wfInit(); break;
+        case MODE_WATERFALL: do{ wfSource=(wfSource+1)%3; }while((wfSource==0&&!nrfPresent)||(wfSource==1&&!ccPresent)||(wfSource==2&&!wfHas915())); if(wfReady)wfc.fillScreen(wfHeat(0)); wfInit(); break;
         default: break;
       }
   uiDirty=true;
@@ -1630,7 +1734,7 @@ static void buttons(){
 // D-pad moves, Enter selects, Esc back, Q home, M mute, A ack (baseline on Status).
 // Codes are the TCA8418's raw key numbers, captured on the bench 2026-11-19.
 static const uint8_t TCA_ADDR=0x34;
-enum : uint8_t { KC_UP=57, KC_DOWN=58, KC_LEFT=54, KC_RIGHT=64, KC_ENTER=67, KC_ESC=1, KC_Q=6, KC_M=48, KC_A=13, KC_L=53 };   // L: from the matrix pattern (row = col/2, col = row + 4*(col odd))
+enum : uint8_t { KC_UP=57, KC_DOWN=58, KC_LEFT=54, KC_RIGHT=64, KC_ENTER=67, KC_ESC=1, KC_Q=6, KC_M=48, KC_A=13, KC_L=53, KC_H=37 };   // L: from the matrix pattern (row = col/2, col = row + 4*(col odd))
 static bool kbOk=false; static uint8_t kbHeld=0; static uint32_t kbRepAt=0;
 static bool tcaW(uint8_t r,uint8_t v){ return M5.In_I2C.writeRegister8(TCA_ADDR,r,v,400000); }
 static uint8_t tcaR(uint8_t r){ return M5.In_I2C.readRegister8(TCA_ADDR,r,400000); }
@@ -1660,12 +1764,14 @@ static void moveSel(int d){ int idxs[MAXDET],n;
   M5.Speaker.tone(1300,20); uiDirty=true;
 }
 static void keyAct(uint8_t k){
+  if(mode==MODE_HELP){ mode=helpPrev; M5.Speaker.tone(900,40); uiDirty=true; return; }   // any key closes Help
   switch(k){
+    case KC_H: helpPrev=mode; mode=MODE_HELP; M5.Speaker.tone(1400,40); uiDirty=true; return;
     case KC_Q: if(mode!=MODE_IDLE){ tvbgFiring=false; finderLocked=false; goHome(); M5.Speaker.tone(900,50); } return;
     case KC_M: toggleMute(); return;
     case KC_A:
       if(mode==MODE_STATUS){ snoozeAll(); return; }                  // Status: baseline (Stick: side hold)
-      if(alarmActive()){ ackAll(true); goHome(); toast("ACKED"); }   // Stick: double-tap
+      if(alarmActive()){ ackAll(true); if(mode!=MODE_WARDRIVE) goHome(); toast("ACKED"); }   // Stick: double-tap; Wardrive keeps going
       return;
     case KC_ESC:
       if(mode==MODE_IDLE){ mode=MODE_STATUS; statusSel=0; M5.Speaker.tone(1400,40); uiDirty=true; return; }
@@ -1750,7 +1856,7 @@ void setup(){
     rfspi.begin(RF_SCK,RF_MISO,RF_MOSI,-1);
     ccPresent=ccProbe(); nrfPresent=nrfProbe();
   }
-  sdlog::begin(); wd::begin(); setRowsBuild();   // before the scan task: the bus is still ours alone
+  sdlog::begin(); wd::begin(); setRowsBuild(); if(wd::avail) TOYS_N=7;   // before the scan task: the bus is still ours alone
   Serial.printf("Board: %s  PSRAM %u KB  display %dx%d\n", B->name, (unsigned)(ESP.getPsramSize()/1024),
                 (int)M5.Display.width(), (int)M5.Display.height());
   Serial.printf("RF Pack: CC1101=%s nRF24=%s\n", ccPresent?"yes":"no", nrfPresent?"yes":"no");
@@ -1777,6 +1883,8 @@ void loop(){
   uint32_t now=millis();
   if(restoreVolAt && now>restoreVolAt){ M5.Speaker.setVolume(applyVol(80)); restoreVolAt=0; } // back to UI volume after an alarm
 
+  // A toy just opened during the BLE phase: end that scan now so the lock frees in ms, not 6 s.
+  if(toyMode() && bleScanning){ bleScanning=false; NimBLEDevice::getScan()->stop(); }
   // SSID scanner: refresh the network list every ~3 s while viewing
   if(mode==MODE_SSID && displayOn && now-ssidLast>3000){ RadioLock L(0); if(L.ok){ ssidLast=now; scanSsids(); uiDirty=true; } }   // busy: try next loop
 
@@ -1788,7 +1896,10 @@ void loop(){
   if(mode==MODE_SSID) ssidWifi=true;
   else if(ssidWifi){ RadioLock L(0); if(L.ok){ if(!toyMode()) WiFi.mode(WIFI_OFF); ssidWifi=false; } }
   // A deferred sprite: create it (and redraw the toy) once the radio lock is ours.
-  auto wfLate=[&](){ if(wfReady||wfTried||ESP.getPsramSize()) return; wfMayAlloc=true; if(mode==MODE_WATERFALL) wfInit(); else trafInit(); wfMayAlloc=false; };
+  // Also wait for the room: never take the ~25 KB sprite unless 45 KB stays free. Retried every frame.
+  auto wfLate=[&](){ if(wfReady||wfTried||ESP.getPsramSize()) return;
+    if(ESP.getFreeHeap() < 240u*wfH() + 45000u) return;
+    wfMayAlloc=true; if(mode==MODE_WATERFALL) wfInit(); else trafInit(); wfMayAlloc=false; };
   // live waterfall: drive the selected radio and render fast. Keep the screen
   // awake the whole time (you are actively watching it).
   if(mode==MODE_WATERFALL){
@@ -1813,6 +1924,9 @@ void loop(){
       if(tvbgIdx<TVBG_N){ tvbgSend(TVBG_CODES[tvbgIdx]); tvbgIdx++; uiDirty=true; }
       else { tvbgFiring=false; M5.Speaker.tone(1200,80); uiDirty=true; } }
   }
+  // Wardriving runs exactly while its screen is open past the warning (Esc, Q, lock-free exits stop it).
+  if(wardriving()!=wd::on) wd::setOn(wardriving());
+  if(mode==MODE_WARDRIVE){ static uint32_t lastW=0; if(now-lastW>1000){ lastW=now; uiDirty=true; } }
   // GPS screen: refresh once a second and stay awake (you are walking with it).
   if(mode==MODE_GPS){ wake(INTERACT_TIMEOUT); lastWake=now;
     static uint32_t lastG=0; if(now-lastG>1000){ lastG=now; uiDirty=true; } }

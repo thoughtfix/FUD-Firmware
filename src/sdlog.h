@@ -31,6 +31,8 @@ static char ring[QN][QW]; static volatile int qHead = 0, qTail = 0;   // note() 
 static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile int tailReq = 0;                 // bench: print the last N lines on the next service
 static const char* volatile tailPath = nullptr;  // which file (nullptr = the detection log)
+static volatile bool lsReq = false;              // bench: list /fud on the next service
+static const char* volatile rmPrefix = nullptr;  // bench: with lsReq, delete /fud files starting with this
 
 static bool present() { return cardOk; }
 static int queued() { return (qHead - qTail + QN) % QN; }
@@ -102,7 +104,7 @@ static void printTail(int n, const char* p) {
 // Scan task, between radio phases: write what is queued.
 static void service() {
   if (!avail) return;
-  if (!on || (!queued() && !tailReq)) return;
+  if (!on || (!queued() && !tailReq && !lsReq)) return;
   if (!cardOk && millis() - lastTry < 30000) return;   // no card: retry every 30 s
   if (!mount()) return;
   if (queued()) {
@@ -119,6 +121,14 @@ static void service() {
     }
     f.close();
   }
+  if (lsReq) { lsReq = false; File d = SD.open(DIR); int n = 0;
+    const char* rp = rmPrefix; rmPrefix = nullptr; char del[24][40]; int nd = 0;
+    if (d) { for (File e = d.openNextFile(); e; e = d.openNextFile()) {
+        if (rp && !strncmp(e.name(), rp, strlen(rp)) && nd < 24) snprintf(del[nd++], 40, "%s/%s", DIR, e.name());
+        else { Serial.printf("[sdls] %8u  %s\n", (unsigned)e.size(), e.name()); n++; }
+        e.close(); } d.close(); }
+    for (int i = 0; i < nd; i++) Serial.printf("[sdls] deleted %s: %s\n", del[i], SD.remove(del[i]) ? "ok" : "FAILED");
+    Serial.printf("[sdls] %d files in %s\n", n, DIR); }
   if (tailReq) { printTail(tailReq, tailPath && tailPath[0] ? tailPath : path); tailReq = 0; tailPath = nullptr; }
   unmount();
 }
